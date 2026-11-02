@@ -23,7 +23,7 @@ install.bat, uninstall.bat
 2. `main.lua` makes sure `input-ipc-server` is set (`mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with an async `subprocess` (`playback_only=false`). Aborting that command kills the bridge.
 3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`.
 4. Lua to bridge: broadcast `script-message watch-together-out <target> <json>`, where target is a peer id or `*` (all peers). The bridge sees it as an IPC `client-message`.
-5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. The host refuses connections beyond `-MaxPeers` (`max_guests`). Lines over 1 MB are dropped.
+5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. A peer write blocked for 5 s (`SendTimeout`) closes that peer. The host refuses connections beyond `-MaxPeers` (`max_guests`). Lines over 1 MB are dropped.
 
 ## Protocol (version 2, newline-delimited JSON)
 
@@ -141,7 +141,7 @@ The guest menu lists host names that are neither in the guest's playlist nor in 
 - else, with `settings.download_to = "video"` (default, menu "Save to"), the current local file's folder;
 - else the Downloads folder: the real one from `sysinfo.ps1` (`shell:Downloads`, it can be moved), `%USERPROFILE%\Downloads` until that answer arrives.
 
-Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
+Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. It never replaces an existing file: the target folder is chosen when each download starts and can change while a queue runs. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
 
 ### Paused precision
 

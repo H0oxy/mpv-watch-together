@@ -31,6 +31,13 @@ local o = {
     download_dir = "",      -- guest: where downloads go; empty = next to the current file, else Downloads
 }
 options.read_options(o, "watch_together")
+local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10  -- also the length offered when the setting is off
+
+-- Command line for one of our PowerShell helpers next to this script.
+local function ps_args(script, ...)
+    return { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+             "-File", utils.join_path(mp.get_script_directory(), script), ... }
+end
 
 -- A file in mpv's config folder, or nil when mpv runs without one (--no-config): then "~~/" expands to
 -- a bare relative name, and writing it would litter whatever folder mpv was started from.
@@ -258,6 +265,7 @@ local STRINGS = {
 }
 local lang = "en"  -- until the Windows display language is known
 local function T(key, ...) return string.format(STRINGS[lang][key], ...) end
+local function control_text(c) return T(c == "host" and "control_host_short" or "control_all_short") end
 
 local my_name = (o.name ~= "" and o.name or os.getenv("USERNAME") or "mpv"):sub(1, 32)
 local control = o.control == "host" and "host" or "all"
@@ -491,7 +499,7 @@ local function menu_item()
         } }
         items[#items + 1] = { title = T("copy_invite"), cmd = "script-message watch-together-invite" }
     elseif role == "join" and r then
-        items[#items + 1] = { title = T("control_is", T(r.control == "host" and "control_host_short" or "control_all_short")), state = { "disabled" } }
+        items[#items + 1] = { title = T("control_is", control_text(r.control)), state = { "disabled" } }
     end
     if role == "join" and host_files and #host_files.names > 0 then
         local sub = {}
@@ -524,7 +532,7 @@ local function menu_item()
     end
     items[#items + 1] = { type = "submenu", title = T("settings"), submenu = {
         { title = T("set_wait"), cmd = "script-message watch-together-setting wait_for_others", state = st(false, settings.wait_for_others) },
-        { title = T("set_countdown", o.countdown > 0 and o.countdown or 10), cmd = "script-message watch-together-setting countdown", state = st(false, settings.countdown) },
+        { title = T("set_countdown", COUNTDOWN_SECONDS), cmd = "script-message watch-together-setting countdown", state = st(false, settings.countdown) },
         { title = T("set_resume"), cmd = "script-message watch-together-setting resume_memory", state = st(false, settings.resume_memory) },
         { title = T("set_share", o.share_port), cmd = "script-message watch-together-setting share_files", state = st(false, settings.share_files) },
     } }
@@ -582,8 +590,7 @@ mp.set_property("user-data/watch-together/name", my_name)
 -- mpv knows neither the OS language, the Steam name nor the Downloads folder, so ask Windows once.
 if mp.get_property_native("platform") == "windows" then
     mp.command_native_async({ name = "subprocess", playback_only = false, capture_stdout = true,
-        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                 "-File", utils.join_path(mp.get_script_directory(), "sysinfo.ps1") },
+        args = ps_args("sysinfo.ps1"),
     }, function(ok, res)
         local info = ok and res.status == 0 and utils.parse_json(res.stdout or "")
         if type(info) ~= "table" then return end
@@ -775,8 +782,6 @@ local function update_hold()
 end
 
 -- Next episode: everyone starts paused at its beginning and plays together when the count ends.
-local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10
-
 local function start_countdown()
     countdown_end = mp.get_time() + COUNTDOWN_SECONDS
     want_paused = false
@@ -872,6 +877,8 @@ local function on_guest_message(id, m)
             end
             return
         end
+        -- A seek or speed change sent before this guest saw the hold or the countdown must not start the room.
+        if holding or countdown_end then m.paused = true end
         local target = m.pos + (m.paused and 0 or (g.rtt or 0.1) / 2 * m.speed)
         apply(m.paused, target, m.speed)
         notify(m.ev, g.name, m)
@@ -918,9 +925,20 @@ local function on_host_message(m)
         end
     elseif m.t == "room" and type(m.members) == "table" then
         local before = room and room.control
-        room = { control = m.control == "host" and "host" or "all", members = m.members }
+        -- Host data ends up in labels and the menu: keep only fields of the expected types.
+        local list = {}
+        local function num(v) return type(v) == "number" and v or nil end
+        for _, e in ipairs(m.members) do
+            if type(e) == "table" and type(e.name) == "string" and #list < 500 then
+                list[#list + 1] = { name = e.name, file = type(e.file) == "string" and e.file or nil,
+                                    pos = num(e.pos), off = num(e.off), paused = e.paused == true,
+                                    host = e.host == true, stale = e.stale == true,
+                                    wait = type(e.wait) == "string" and e.wait or nil }
+            end
+        end
+        room = { control = m.control == "host" and "host" or "all", members = list }
         if before and before ~= room.control then
-            osd(T("control_is", T(room.control == "host" and "control_host_short" or "control_all_short")))
+            osd(T("control_is", control_text(room.control)))
         end
         publish()
         refresh_menu()
@@ -1081,12 +1099,9 @@ local function start(mode, address, port)
     end
     stop()
     role = mode
-    local args = {
-        "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-        "-File", utils.join_path(mp.get_script_directory(), "bridge.ps1"),
+    local args = ps_args("bridge.ps1",
         "-Pipe", ipc_pipe_name(), "-Mode", mode, "-Script", mp.get_script_name(),
-        "-Address", address, "-Port", tostring(port), "-Bind", o.bind, "-MaxPeers", tostring(o.max_guests),
-    }
+        "-Address", address, "-Port", tostring(port), "-Bind", o.bind, "-MaxPeers", tostring(o.max_guests))
     local h
     h = mp.command_native_async({ name = "subprocess", args = args, playback_only = false,
                                   capture_stderr = true }, function(_, res)
@@ -1176,7 +1191,7 @@ end
 local function set_control(value)
     if role ~= "host" or (value ~= "all" and value ~= "host") then return end
     control = value
-    osd(T("control_is", T(control == "host" and "control_host_short" or "control_all_short")))
+    osd(T("control_is", control_text(control)))
     send("*", room_info())
     publish()
     refresh_menu()
@@ -1206,8 +1221,7 @@ local function copy_invite()
     end
     if o.bind ~= "0.0.0.0" then copy(o.bind) return end
     mp.command_native_async({ name = "subprocess", playback_only = false, capture_stdout = true,
-        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                 "-File", utils.join_path(mp.get_script_directory(), "sysinfo.ps1"), "-Addresses" },
+        args = ps_args("sysinfo.ps1", "-Addresses"),
     }, function(ok, res)
         local info = ok and res.status == 0 and utils.parse_json(res.stdout or "")
         local ips = type(info) == "table" and info.ips or {}
@@ -1308,9 +1322,8 @@ function start_share()
     if share_helper or role ~= "host" or not settings.share_files then return end
     local h
     h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
-        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                 "-File", utils.join_path(mp.get_script_directory(), "share.ps1"),
-                 "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Bind", o.bind, "-Port", tostring(o.share_port) },
+        args = ps_args("share.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(),
+                       "-Bind", o.bind, "-Port", tostring(o.share_port)),
     }, function(_, res)
         if share_helper ~= h then return end
         share_helper = nil
@@ -1351,10 +1364,8 @@ local function next_download()
     local name = table.remove(dl_queue, 1)
     local h
     h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
-        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                 "-File", utils.join_path(mp.get_script_directory(), "fetch.ps1"),
-                 "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Address", joined_address,
-                 "-Port", tostring(host_files.port), "-Name", name, "-Dir", download_dir(), "-Who", room_name or my_name },
+        args = ps_args("fetch.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Address", joined_address,
+                       "-Port", tostring(host_files.port), "-Name", name, "-Dir", download_dir(), "-Who", room_name or my_name),
     }, function()
         if dl_current and dl_current.handle == h then
             dl_current = nil
@@ -1419,7 +1430,7 @@ local function toggle_setting(key)
     if type(settings[key]) ~= "boolean" or not SETTING_LABELS[key] then return end
     settings[key] = not settings[key]
     save_settings()
-    local arg = key == "countdown" and (o.countdown > 0 and o.countdown or 10) or o.share_port
+    local arg = key == "countdown" and COUNTDOWN_SECONDS or o.share_port
     osd(T(settings[key] and "setting_on" or "setting_off", T(SETTING_LABELS[key], arg)))
     if key == "wait_for_others" then update_hold() end
     if key == "countdown" and not settings.countdown and countdown_end then finish_countdown() end
@@ -1444,9 +1455,7 @@ end)
 -- update.ps1 prints one line: "available <tag>", "latest", "updated <tag>" or "error <text>".
 local function run_updater(extra, cb)
     if mp.get_property_native("platform") ~= "windows" then return end
-    local args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                   "-File", utils.join_path(mp.get_script_directory(), "update.ps1"),
-                   "-Dir", mp.get_script_directory(), "-Current", VERSION }
+    local args = ps_args("update.ps1", "-Dir", mp.get_script_directory(), "-Current", VERSION)
     for _, a in ipairs(extra) do args[#args + 1] = a end
     mp.command_native_async({ name = "subprocess", args = args, playback_only = false, capture_stdout = true },
         function(ok, res)

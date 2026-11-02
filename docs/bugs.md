@@ -74,3 +74,12 @@ Symptom: the host shows "комната открыта", the friend keeps connec
 
 ## `playback-restart` fires on file start
 Fix: the first restart after `file-loaded` is not treated as a user seek; otherwise opening a file would seek the peer to 0.
+
+## A download could replace a file of another series
+Risk (found in an audit): "Download all" picks the folder when each queued file starts. A guest who opens a video from another folder meanwhile gets the rest written there, and `Move-Item -Force` replaced a same-named `01.mkv`. Fix: `fetch.ps1` refuses when the target exists, and moves without `-Force`. Verified: fetch.ps1 against an existing file reports "already exists" and leaves it untouched.
+
+## A guest seek during a hold started the room
+Risk (found in an audit, race of about one RTT): only `pause` requests were held back while the room waits. A seek or speed request sent before the guest saw the hold carried `paused=false`, so the host played and broadcast it. Fix: while `holding` or counting down, the host forces `paused = true` on any request. Not reproduced; e2e, buffering and features still pass.
+
+## One peer that stops reading blocks the host bridge
+Risk (found in an audit): writes to peers are blocking. A peer whose TCP window stays at zero would stop the bridge loop for everyone. Fix: `SendTimeout = 5000` on each peer socket; the write throws and the peer is closed. Not reproduced; whether Porthole passes back-pressure is unknown.

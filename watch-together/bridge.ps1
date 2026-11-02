@@ -42,6 +42,7 @@ function Add-Peer($client) {
     $id = 'host'
     if ($Mode -eq 'host') { $id = "p$script:nextId"; $script:nextId++ }
     $client.NoDelay = $true
+    $client.SendTimeout = 5000  # a peer that stops reading must not block the whole room; the write throws and the peer is closed
     $s = $client.GetStream()
     $r = New-Object System.IO.StreamReader($s, $utf8)
     $w = New-Object System.IO.StreamWriter($s, $utf8)

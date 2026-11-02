@@ -28,6 +28,8 @@ try {
     if ($Name -match '[\\/:*?"<>|]' -or $Name -eq '.' -or $Name -eq '..') { throw 'bad file name' }
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $target = Join-Path $Dir $Name
+    # The folder can change while a queue runs (another video opened): never replace a file that is there.
+    if (Test-Path -LiteralPath $target) { throw "$target already exists" }
     $part = "$target.part"
     $offset = [int64]0
     if (Test-Path -LiteralPath $part) { $offset = (Get-Item -LiteralPath $part).Length }
@@ -71,7 +73,7 @@ try {
         }
     }
     $out.Close(); $out = $null
-    Move-Item -LiteralPath $part -Destination $target -Force
+    Move-Item -LiteralPath $part -Destination $target
     Send-Lua @('done', $Name, $target)
 } catch {
     Send-Lua @('error', $Name, ($_.Exception.Message -replace '\s+', ' '))
