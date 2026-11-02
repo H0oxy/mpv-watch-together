@@ -2,6 +2,8 @@
 
 Requirements on both PCs: Windows 10/11, mpv 0.40 or newer (for the built-in right-click menu; tested on 0.41.0-dev), Steam with Porthole (free), and the same video file.
 
+The menu is in Russian on a Russian Windows and in English otherwise (`lang=ru|en` in `script-opts/watch_together.conf` forces it). The steps below use the Russian labels.
+
 ## Install (each person)
 
 1. Unpack the folder and double-click `install.bat`. It copies `watch-together` to `%APPDATA%\mpv\scripts\`.

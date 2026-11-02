@@ -25,7 +25,9 @@ install.bat, uninstall.bat
 | `state` | `ev`, `pos`, `dur`, `paused`, `speed` | `ev`: `pause`, `seek`, `speed` (user action, shown on OSD), `sync`, `tick` (host heartbeat, 1 s) |
 | `ping` / `pong` | `id` | RTT estimate (smoothed), used to project the remote position |
 
-Applying a state is idempotent: it sets pause or speed only if they differ, and seeks only if the drift is over `threshold` (0.3 s). Echoes therefore die after one round. Local changes caused by a remote state are not re-sent: `expected_pause`, `expected_speed` and `ignore_restart_until` filter them. Only the joiner applies `tick`. States whose `dur` differs by more than 1 s are ignored and trigger a one-time "different file" warning.
+Applying a state is idempotent: it sets pause or speed only if they differ, and seeks only if the drift is over `threshold` (0.3 s). Echoes therefore die after one round. Local changes caused by a remote state are not re-sent: `expected_pause` and `expected_speed` filter property changes, and `own_seek` (target and time of our last follow seek) filters `playback-restart`. A restart counts as ours only if it landed within 1 s of that target, so a user seek merged with ours is still sent.
+
+Only the joiner applies `tick`, and only after a 0.25 s delay (the position is advanced by the delay). It skips the tick while `seeking` or within 1.5 s of its own pause/seek/speed (`last_local_action`). The delay lets mpv deliver queued `seek`/`playback-restart` events of a user seek before the drift is judged. States whose `dur` differs by more than 1 s are ignored and trigger a one-time "different file" warning.
 
 ## Options
 
@@ -36,7 +38,14 @@ port=47800
 bind=127.0.0.1      # host listen address; 0.0.0.0 for LAN/Tailscale
 address=127.0.0.1   # where "join" connects (Porthole maps the host port here)
 threshold=0.3
+lang=auto           # auto | ru | en
 ```
+
+## Language
+
+All user-facing text is in the `STRINGS` table in `main.lua` (`ru`, `en`), formatted through `T(key, ...)`. With `lang=auto`, the script runs `powershell -Command [Globalization.CultureInfo]::CurrentUICulture.Name` once at startup (async). Any `ru*` result gives Russian, anything else gives English. Until the answer arrives (under a second), the menu is in English. The menu entry is found by its `watch-together-leave` command, not by its title, because the title changes with the language. The detected language is published in `user-data/watch-together/lang`.
+
+Verified: `lang=ru` and `lang=en` give the full menu in that language, and `auto` gave `ru` on a Windows whose first display language is `ru`. Not verified on an English Windows. Note that a PowerShell started from this dev environment reports `en-US` while mpv started normally reports `ru`.
 
 ## Test
 
@@ -50,12 +59,13 @@ It starts two `--no-config --vo=null` mpv instances with port 47899. Each has a 
 - the joiner follows the host's episode and position;
 - friend file names are known;
 - pause, seek (paused and playing) and speed both ways;
+- 6 joiner seeks at random moments against the host's ticks, none lost;
 - drift under 0.3 s over 5 s;
 - manual next/previous episode both ways;
 - no echo loop;
 - disconnect detection.
 
-Last run (mpv 0.41.0-dev): all 15 checks passed, max drift 0.12 s.
+Last run (mpv 0.41.0-dev): all 16 checks passed, max drift 0.12 s. A separate stress run (5 seeds, 12 random joiner seeks or pauses each, 60 actions in total) lost none.
 
 Manual checks done once (not automated):
 

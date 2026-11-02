@@ -12,6 +12,17 @@ Symptom (expected, avoided): a submenu set once disappears after pause/track cha
 ## Seek/pause echo between peers
 Cause: applying a remote state changes local properties, which would be sent back. With pause applied before the seek finishes, the echoed old position could pull the peer back. Fix: skip local changes that match `expected_pause` / `expected_speed`, and ignore the `playback-restart` caused by our own seek; states are applied idempotently. Verified: e2e "no ping-pong" check.
 
+## Host tick undoes the joiner's seek
+Symptom: the joiner seeks, both players end up back at the old position (e2e "seek B -> A (playing)" failed once; a stress run lost 1 of 12 seeks). Cause, two races:
+1. The `ignore_restart_until` flag skipped "the next restart" after our follow seek. A user seek merged with ours into one restart and was never sent.
+2. A tick handled after mpv executed the user seek but before its `playback-restart` event reached the script looked like drift. The correction seek overrode the user's.
+
+Fix:
+1. `own_seek` compares the landing position with our own target.
+2. Ticks wait 0.25 s, then skip while `seeking` or within 1.5 s of our own action.
+
+Verified: 60 random actions in the stress run with no loss; e2e "joiner seeks vs ticks".
+
 ## Episode switch echo
 Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again, and quick switches could bounce back and forth. Fix: `hello.follow` is sent only for file changes we did not make to follow the friend (`expected_switch` matches `playlist-pos`). The host does not answer a hello with a switch, only on connect. Verified: e2e "stable: no ping-pong"; manual auto-advance on both sides.
 

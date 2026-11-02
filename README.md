@@ -2,7 +2,7 @@
 
 An mpv script for watching the same video with a friend on another PC. Each of you plays your own copy of the file, and the script keeps pause, seeking, playback speed and the current episode in sync over one TCP connection. The connection runs through [Porthole](https://store.steampowered.com/app/4963920/Porthole_Local_Port_Sharing/), a free Steam app that shares a local port with Steam friends, so nobody has to open ports on the router.
 
-The menu and on-screen messages are in Russian.
+The menu and on-screen messages follow the Windows display language: Russian on Russian Windows, English on any other. This README gives the English labels with the Russian ones in parentheses. Porthole labels are quoted from its Russian interface.
 
 ## Requirements
 
@@ -28,21 +28,21 @@ One of you hosts the room and the other joins it.
 ### Host
 
 1. Open the video in mpv.
-2. Right-click the video and choose Совместный просмотр → Создать комнату (порт 47800).
+2. Right-click the video and choose Watch together → Create room (port 47800) (Совместный просмотр → Создать комнату).
 3. Start Porthole and create a lobby.
-4. Open the port selection and add a port: protocol `tcp`, address `127.0.0.1`, port `47800`. Leave "Предложить под другим портом" unchecked. Click Добавить, then Готово. The bottom of the lobby window now shows "Раздаётся: TCP 47800".
+4. Open the port selection and add a port: protocol `tcp`, address `127.0.0.1`, port `47800`. Leave "Предложить под другим портом" unchecked. Click "Добавить", then "Готово". The bottom of the lobby window now shows "Раздаётся: TCP 47800".
 5. Invite your friend from the friends list or send them the lobby code.
 
 ### Friend
 
 1. Open the same video in mpv.
 2. Start Porthole and join the host's lobby.
-3. Click Разрешить on the offered port 47800. Porthole opens the port on your PC only after you allow it.
-4. In mpv, right-click and choose Совместный просмотр → Подключиться к другу (Porthole).
+3. Click "Разрешить" on the offered port 47800. Porthole opens the port on your PC only after you allow it.
+4. In mpv, right-click and choose Watch together → Join friend (Porthole) (Совместный просмотр → Подключиться к другу).
 
-Both screens show "Друг подключился", and the friend's player jumps to the host's episode and position. If the friend connects before the host has shared the port, the script keeps retrying every two seconds, so there is no need to click again.
+Both screens show "Friend connected" ("Друг подключился"), and the friend's player jumps to the host's episode and position. If the friend connects before the host has shared the port, the script keeps retrying every two seconds, so there is no need to click again.
 
-When you are done, choose Выйти из комнаты or just close mpv.
+When you are done, choose Leave room (Выйти из комнаты) or just close mpv.
 
 ## What gets synced
 
@@ -50,21 +50,21 @@ Pause, play, seeking and speed changes go both ways, whoever makes them. When on
 
 The host sends its position every second. If the friend's player drifts more than 0.3 seconds away, it seeks to catch up. In the automated test on one PC the players stayed within 0.12 seconds of each other.
 
-The script compares files by duration. If they differ by more than a second, it shows "У друга другой файл" and stops syncing until you are both on the same file.
+The script compares files by duration. If they differ by more than a second, it warns that the friend has a different file and stops syncing until you are both on the same one.
 
-The menu shows the connection status and the file each of you has open (У тебя, У друга).
+The menu shows the connection status and the file each of you has open (You / Friend, У тебя / У друга).
 
 ## Troubleshooting
 
-The friend's status stays at "подключаемся…". Run this on the friend's PC:
+The friend's status stays at "connecting…" ("подключаемся…"). Run this on the friend's PC:
 
 ```powershell
 Get-NetTCPConnection -LocalPort 47800 -State Listen
 ```
 
-Empty output means Porthole has not opened the port there. Either the friend has not clicked Разрешить, or the host has not shared the port in this lobby.
+Empty output means Porthole has not opened the port there. Either the friend has not clicked "Разрешить", or the host has not shared the port in this lobby.
 
-"Ошибка: cannot listen on 127.0.0.1:47800" means another program already uses the port. Pick a different port on both PCs (see below) and share that port in Porthole.
+"Error: cannot listen on 127.0.0.1:47800" means another program already uses the port. Pick a different port on both PCs (see below) and share that port in Porthole.
 
 ## Without Porthole
 
@@ -74,15 +74,16 @@ The script needs nothing more than a TCP connection, so a LAN, Tailscale or a fo
 bind=0.0.0.0
 ```
 
-The friend copies the host's address, for example `100.64.0.5:47800`, and chooses Подключиться к адресу из буфера обмена.
+The friend copies the host's address, for example `100.64.0.5:47800`, and chooses Join address from clipboard (Подключиться к адресу из буфера обмена).
 
 All options for `watch_together.conf`:
 
 ```
 port=47800          # room port
 bind=127.0.0.1      # address the host listens on
-address=127.0.0.1   # where Подключиться к другу connects
+address=127.0.0.1   # where Join friend connects
 threshold=0.3       # drift in seconds before a correcting seek
+lang=auto           # auto, ru or en
 ```
 
 ## How it works

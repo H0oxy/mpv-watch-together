@@ -2,7 +2,7 @@
 
 Two people, two PCs, each with its own copy of the same video: mpv stays in sync on pause, seek and speed over one TCP link. The intended tunnel is Porthole (Steam). Windows only.
 
-- `watch-together/main.lua`: mpv script with the right-click menu, the sync logic and Russian on-screen messages.
+- `watch-together/main.lua`: mpv script with the right-click menu, the sync logic and on-screen messages (Russian or English by Windows display language; strings in the `STRINGS` table).
 - `watch-together/bridge.ps1`: PowerShell relay between mpv JSON IPC and the TCP peer. ASCII only.
 - `install.bat` / `uninstall.bat`: copy the plugin to, or remove it from, `%APPDATA%\mpv\scripts\watch-together`.
 

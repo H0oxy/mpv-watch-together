@@ -95,6 +95,18 @@ try {
     $ok = Wait-Until { (Get-Prop $b 'speed') -eq 1 } 3
     Check 'speed A -> B' $ok ''
 
+    # Joiner seeks at random moments against the host's 1 s ticks: a tick in flight must not undo them.
+    $rand = New-Object Random 23
+    $lost = foreach ($k in 1..6) {
+        Start-Sleep -Milliseconds ($rand.Next(0, 1000))
+        $target = 60 + 40 * $k
+        Invoke-Mpv $b @('seek', $target, 'absolute') | Out-Null
+        Start-Sleep 2.5
+        $pa = Get-Prop $a 'time-pos'; $pb = Get-Prop $b 'time-pos'
+        if ([math]::Abs($pa - $pb) -ge 0.3 -or $pb -lt $target -or $pb -gt $target + 3) { "$target->a=$pa,b=$pb" }
+    }
+    Check 'joiner seeks vs ticks (6 random)' (-not $lost) ($lost -join ' ')
+
     $drifts = foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; Get-Drift }
     $max = ($drifts | Measure-Object -Maximum).Maximum
     Check 'drift while playing 5s' ($max -lt 0.3) ("max={0:N3}s" -f $max)
