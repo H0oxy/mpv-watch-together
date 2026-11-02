@@ -67,8 +67,8 @@ State events added in 1.4:
 - A local action becomes a `req`, and `pending.count` goes up. With `control=host`, it is reverted to the last host state instead (`apply_host_state`), with an OSD notice.
 - A non-tick state with `by` = our room name is the answer to our own request. It is not applied, because we already did that locally and may have done more since. It only lowers `pending.count`.
 - Other non-tick states are applied right away: follow the file if it differs, else check the duration, then `apply`.
-- A tick is handled 0.25 s later. It is skipped while a request is pending (up to 3 s), while `seeking`, within 1.5 s of our own action, or if its epoch is older than the last state. Otherwise it is applied like a state (drift over `threshold` means a seek).
-- The host position is projected as `pos + (now - received + rtt/2) * speed` while playing.
+- A tick is handled 0.25 s later. It is skipped while a request is pending (up to 3 s), while `seeking`, within 1.5 s of our own action, or if its epoch is older than the last state. Otherwise it is applied like a state (drift over `threshold` means a seek, smaller drift a speed nudge).
+- The host position is projected as `pos + (now - received + rtt/2) * speed` while playing. `rtt` is the smallest of the last 10 pings, so one slow ping does not shift it.
 
 ### Not reporting our own changes
 
@@ -145,7 +145,17 @@ Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and con
 
 ### Paused precision
 
-`apply` seeks when the difference exceeds `threshold` (0.3 s) while playing, but only `max(0.1, 1.5 / container-fps)` while paused. A paused seek is invisible, and the limit stays above one frame so a coarse frame rate does not seek on every tick. Measured with 3 players over 5 pauses: gap 0–0.08 s (it was up to 0.3 s).
+`apply` seeks when the difference exceeds `threshold` (0.5 s) while playing, but only `max(0.1, 1.5 / container-fps)` while paused. A paused seek is invisible, and the limit stays above one frame so a coarse frame rate does not seek on every tick. Measured with 3 players over 5 pauses: gap 0–0.08 s (it was up to 0.3 s).
+
+### Soft drift correction
+
+A guest whose drift while playing is between 0.04 s and `threshold` does not seek: `apply` sets `nudge = 1 + clamp(drift / 2, ±0.05)` and plays at `room speed * nudge`, so each tick roughly halves the drift. mpv keeps the pitch (scaletempo2), and up to 5 % is not heard. The host is the reference and never nudges.
+
+- The nudged speed goes through `expected_speed`, so the observer does not report it. Requests send `speed / nudge`, the room speed.
+- A user speed change during a nudge keeps the user's change: `[`/`]` multiply the nudged speed, so it is divided by `nudge`; Backspace sets exactly 1, which is kept.
+- `end_nudge()` restores the room speed on leave, disconnect, "lost" and any local action, since ticks stop steering for a while then.
+
+Test: e2e "small drift caught up by speed, no seek" sends B a fake tick 0.3 s ahead; B must speed up instead of seeking, the spread stays under 0.2 s and settles under 0.1 s at speed 1, and the host and C keep speed 1. A second check presses "]" on B during a nudge: the host must get exactly 1.1. Steady spread with 3 players: 0.04 s.
 
 ### Seek latency
 
@@ -211,11 +221,11 @@ Spread is measured with every playing position moved back to the time of the fir
 
 Last results (mpv 0.41.0-dev, one PC):
 
-- e2e: 26/26.
+- e2e: 28/28.
 - features: 15/15.
 - buffering: 8/8.
 - scale with 5 guests: 6/6 runs.
-- scale with 20 guests: connect + sync 1.4 s, pause to all 0.28 s, guest seek to all 0.36 s, spread under 0.2 s, host bridge about 2.5% of a core.
+- scale with 20 guests: connect + sync 1.5 s, pause to all 0.08 s, guest seek to all 0.33 s, spread under 0.2 s, host bridge about 2% of a core.
 
 `scale.ps1` stops its mpv instances in `finally`. Do not pipe it into `Select-Object -First`: that stops the script before `finally` runs and leaves mpv instances holding the test pipe names.
 

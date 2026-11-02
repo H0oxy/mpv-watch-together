@@ -16,7 +16,7 @@ local o = {
     port = 47800,
     bind = "127.0.0.1",     -- host listens here; Porthole forwards to localhost
     address = "127.0.0.1",  -- where "join" connects; with Porthole the host's port appears locally
-    threshold = 0.3,        -- seconds of drift before a correcting seek
+    threshold = 0.5,        -- seconds of drift before a correcting seek; less is caught up by speed
     lang = "auto",          -- auto (Windows display language) | ru | en
     control = "all",        -- host default: all | host (only the host controls playback)
     name = "",              -- shown to others; empty means the Steam name, else the Windows user name
@@ -273,11 +273,15 @@ local control = o.control == "host" and "host" or "all"
 local role                  -- "host" | "join" | nil
 local status = "off"
 local helper                -- async subprocess handle of bridge.ps1
-local rtt = 0.1             -- guest: smoothed round trip to the host
+local rtt = 0.1             -- guest: round trip to the host, the smallest of the last few
+local rtt_samples = {}      -- guest: last round trips; one slow ping must not shift the projected host position
 local last_rx = 0           -- guest: last message from the host
 
 -- Changes we make ourselves to follow the room, so the observers don't report them as user actions.
 local expected_pause, expected_speed
+local nudge = 1             -- guest: speed factor on top of the room speed while catching up a small drift
+local NUDGE_MAX = 0.05      -- at most 5 % faster or slower: mpv keeps the pitch, so it is not heard
+local NUDGE_DEAD = 0.04     -- drift below this counts as in sync (time-pos moves in whole frames)
 local own_seeks = {}        -- {pos, at, playing} of our recent follow seeks; mpv may merge several into one restart
 local seek_latency = 0.05   -- smoothed time from our seek command to playback-restart
 local expected_switch       -- playlist index we switched to because of the room
@@ -662,17 +666,24 @@ end
 
 -- Bring this player to a state without reporting the resulting property changes as user actions.
 local function apply(paused, target, speed)
-    if math.abs(speed - mp.get_property_number("speed", 1)) > 1e-3 then
-        expected_speed = speed
-        mp.set_property_number("speed", speed)
-    end
     local cur = mp.get_property_number("time-pos")
     -- A seek while paused is invisible, so line up to about a frame then; while playing every seek
-    -- stutters, so only real drift is corrected. The paused limit stays above one frame, or a
+    -- stutters, so only drift over threshold is sought. The paused limit stays above one frame, or a
     -- player with a coarse frame rate would seek again on every tick.
     local fps = mp.get_property_number("container-fps", 25)
     local limit = paused and math.max(0.1, 1.5 / math.max(fps, 1)) or o.threshold
-    if cur and math.abs(cur - target) > limit then
+    local drift = cur and target - cur or 0
+    -- A guest a little off while playing catches up by playing slightly faster or slower, halving the
+    -- drift about every tick. The host is the reference and never nudges.
+    nudge = 1
+    if role == "join" and not paused and math.abs(drift) > NUDGE_DEAD and math.abs(drift) <= limit then
+        nudge = 1 + math.max(-NUDGE_MAX, math.min(NUDGE_MAX, drift / 2))
+    end
+    if math.abs(speed * nudge - mp.get_property_number("speed", 1)) > 1e-3 then
+        expected_speed = speed * nudge
+        mp.set_property_number("speed", speed * nudge)
+    end
+    if cur and math.abs(drift) > limit then
         -- The picture stands still while an exact seek decodes, and the room keeps playing:
         -- aim ahead by this player's usual seek time so we land level with everyone else.
         if not paused then target = target + seek_latency * speed end
@@ -684,6 +695,15 @@ local function apply(paused, target, speed)
         expected_pause = paused
         mp.set_property_native("pause", paused)
     end
+end
+
+-- Back to the plain room speed: on leaving, losing the host, or a user action that ticks won't steer for a while.
+local function end_nudge()
+    if nudge == 1 then return end
+    local speed = mp.get_property_number("speed", 1) / nudge
+    nudge = 1
+    expected_speed = speed
+    mp.set_property_number("speed", speed)
 end
 
 local room_name             -- guest: our name as the host shows it
@@ -909,7 +929,11 @@ local function on_host_message(m)
     if type(m.you) == "string" then room_name = m.you end
     if m.t == "pong" and type(m.id) == "number" then
         local sample = mp.get_time() - m.id
-        if sample >= 0 and sample < 10 then rtt = rtt * 0.7 + sample * 0.3 end
+        if sample >= 0 and sample < 10 then
+            rtt_samples[#rtt_samples + 1] = sample
+            if #rtt_samples > 10 then table.remove(rtt_samples, 1) end
+            rtt = math.min(unpack(rtt_samples))
+        end
     elseif m.t == "files" and type(m.names) == "table" then
         local names = {}
         for _, n in ipairs(m.names) do
@@ -993,7 +1017,7 @@ end
 
 local function local_req(ev)
     local m = { t = "req", ev = ev, pos = mp.get_property_number("time-pos"), paused = mp.get_property_native("pause"),
-                speed = mp.get_property_number("speed", 1), dur = mp.get_property_number("duration"),
+                speed = mp.get_property_number("speed", 1) / nudge, dur = mp.get_property_number("duration"),
                 file = mp.get_property("filename"), pl = mp.get_property_number("playlist-pos") }
     return m.pos and m
 end
@@ -1020,6 +1044,7 @@ local function local_action(ev)
         end
         if status == "hosting" or status == "listening" then broadcast(ev, my_name) end
     elseif role == "join" and (status == "connected" or status == "lost") then
+        end_nudge()
         if room and room.control == "host" then
             osd(T("host_only"))
             apply_host_state()
@@ -1074,6 +1099,8 @@ local function stop()
         helper = nil
         mp.abort_async_command(h)
     end
+    end_nudge()
+    rtt_samples = {}
     remember()
     stop_share()
     cancel_downloads()
@@ -1146,6 +1173,7 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
             update_hold()  -- the member we were waiting for may have gone
         else
             host_state, room, pending = nil, nil, nil
+            end_nudge()
             set_status("connecting")
             osd(T("host_dropped"))
         end
@@ -1533,6 +1561,16 @@ end)
 
 mp.observe_property("speed", "number", function(_, speed)
     if expected_speed and math.abs(speed - expected_speed) < 1e-3 then expected_speed = nil return end
+    if nudge ~= 1 then
+        -- The user changed speed while we were catching up: keep their change, drop ours.
+        -- "[" and "]" multiply the nudged speed; Backspace sets exactly 1.
+        local wanted = speed == 1 and 1 or speed / nudge
+        nudge = 1
+        if wanted ~= speed then
+            expected_speed = wanted
+            mp.set_property_number("speed", wanted)
+        end
+    end
     local_action("speed")
 end)
 
@@ -1623,6 +1661,7 @@ mp.add_periodic_timer(1, function()
         send("host", { t = "status", file = mp.get_property("filename"), pos = mp.get_property_number("time-pos"),
                        paused = mp.get_property_native("pause"), rtt = rtt })
         if status == "connected" and mp.get_time() - last_rx > 6 then
+            end_nudge()
             set_status("lost")
             osd(T("lost"))
         end

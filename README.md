@@ -67,7 +67,7 @@ The menu lists the members with their files, and Show members' time on screen (Ð
 
 ## How sync works
 
-The host's player is the reference. A guest's action goes to the host as a request; the host applies it and sends the result to everyone, so two people acting at once still end up in the same place. Once a second the host sends its position, and a guest more than 0.3 seconds off seeks to catch up. When seeking during playback, each player aims ahead by its own measured seek time, so it lands level with the others instead of behind.
+The host's player is the reference. A guest's action goes to the host as a request; the host applies it and sends the result to everyone, so two people acting at once still end up in the same place. Once a second the host sends its position, A guest a little off (up to half a second) catches up by playing up to 5% faster or slower for a few seconds: no jump, and the pitch stays the same. Only a bigger gap is fixed with a seek. When seeking during playback, each player aims ahead by its own measured seek time, so it lands level with the others instead of behind.
 
 In tests on one PC with 21 players (a host and 20 guests), a pause reached everyone within 0.3 seconds and the spread between players stayed under 0.2 seconds. The host's network helper used about 2% of one CPU core.
 
@@ -93,7 +93,7 @@ Create `%APPDATA%\mpv\script-opts\watch_together.conf` with any of these lines:
 port=47800          # room port
 bind=127.0.0.1      # address the host listens on (0.0.0.0 for LAN or Tailscale)
 address=127.0.0.1   # where Join friend connects
-threshold=0.3       # drift in seconds before a correcting seek
+threshold=0.5       # drift in seconds before a correcting seek; less is caught up by speed
 lang=auto           # auto, ru or en
 name=               # your name in the room; empty means the Steam name
 control=all         # host's default control: all or host

@@ -36,7 +36,7 @@ With more than two people, letting every player broadcast its own actions leads 
 - A guest's action is a request.
 - The host applies requests in arrival order and broadcasts each result with an increasing `epoch` and `by`.
 
-Everyone ends up in the last state the host broadcast. The host sends `tick` every second; guests correct drift over 0.3 s with an exact seek, and ignore ticks older than their own unanswered request. A mesh (everyone to everyone) would need N² links through Porthole and an agreement protocol; the star needs one link per guest.
+Everyone ends up in the last state the host broadcast. The host sends `tick` every second; guests catch up small drift by speed and seek only past `threshold` (0.5 s), and ignore ticks older than their own unanswered request. A mesh (everyone to everyone) would need N² links through Porthole and an agreement protocol; the star needs one link per guest.
 
 Cost: the host's upload grows with the guests (tick + room list per guest per second, about 0.3–3 KB each). Measured with 20 guests on one PC: host bridge about 2.5% of one core.
 

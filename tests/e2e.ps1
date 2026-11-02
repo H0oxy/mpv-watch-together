@@ -56,6 +56,8 @@ function Get-Spread($list) {
     }
     ($p | Measure-Object -Maximum).Maximum - ($p | Measure-Object -Minimum).Minimum
 }
+# A guest may be catching up a small drift, up to 5 % off the room speed.
+function Near-Speed($ipc, [double]$room) { [math]::Abs((Get-Prop $ipc 'speed') / $room - 1) -le 0.051 }
 function All-Same($list, $prop) { @($list | ForEach-Object { [string](Get-Prop $_ $prop) } | Select-Object -Unique).Count -eq 1 }
 
 function Start-Player([string]$n, [string]$who) {
@@ -109,10 +111,10 @@ try {
     Check 'guest C seek (playing) -> everyone' $ok ("spread={0:N3}s" -f (Get-Spread $all))
 
     Invoke-Mpv $b @('set_property', 'speed', 1.5) | Out-Null
-    $ok = Wait-Until { (Get-Prop $a 'speed') -eq 1.5 -and (Get-Prop $c 'speed') -eq 1.5 } 3
+    $ok = Wait-Until { (Get-Prop $a 'speed') -eq 1.5 -and (Near-Speed $c 1.5) } 3
     Check 'guest speed -> everyone' $ok ''
     Invoke-Mpv $a @('set_property', 'speed', 1) | Out-Null
-    $ok = Wait-Until { (Get-Prop $b 'speed') -eq 1 -and (Get-Prop $c 'speed') -eq 1 } 3
+    $ok = Wait-Until { (Near-Speed $b 1) -and (Near-Speed $c 1) } 3
     Check 'host speed -> everyone' $ok ''
 
     # Guests seek at random moments against the host's 1 s ticks: a tick in flight must not undo them.
@@ -139,6 +141,26 @@ try {
     $drifts = foreach ($i in 1..10) { Start-Sleep -Milliseconds 500; Get-Spread $all }
     $max = ($drifts | Measure-Object -Maximum).Maximum
     Check 'spread while playing 5s' ($max -lt 0.3) ("max={0:N3}s" -f $max)
+
+    # A fake tick tells B the host is 0.3 s ahead: B must catch up by speed, not seek, and settle back.
+    $tick = ConvertTo-Json -Compress @{ t = 'state'; ev = 'tick'; pos = (Get-Prop $a 'time-pos') + 0.3; paused = $false; speed = 1;
+                                        dur = (Get-Prop $b 'duration'); file = (Get-Prop $b 'filename') }
+    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', $tick) | Out-Null
+    $nudged = Wait-Until { (Get-Prop $b 'speed') -gt 1.01 } 1.5
+    $spreads = foreach ($i in 1..8) { Start-Sleep -Milliseconds 500; Get-Spread $all }
+    $max = ($spreads | Measure-Object -Maximum).Maximum
+    $settled = Wait-Until { (Get-Prop $b 'speed') -eq 1 -and (Get-Spread $all) -lt 0.1 } 10
+    $ok = $nudged -and $max -lt 0.2 -and $settled -and (Get-Prop $a 'speed') -eq 1 -and (Get-Prop $c 'speed') -eq 1
+    Check 'small drift caught up by speed, no seek' $ok ("nudged={0} max={1:N3}s settled={2} spread={3:N3}s" -f $nudged, $max, $settled, (Get-Spread $all))
+
+    # The user presses "]" (x1.1) on B while it is nudged: the room gets 1.1, not 1.1 times the nudge.
+    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', ($tick -replace '"pos":[\d.]+', ('"pos":' + ((Get-Prop $a 'time-pos') + 0.3)))) | Out-Null
+    $nudged = Wait-Until { (Get-Prop $b 'speed') -gt 1.01 } 1.5
+    Invoke-Mpv $b @('multiply', 'speed', 1.1) | Out-Null
+    $ok = $nudged -and (Wait-Until { [math]::Abs((Get-Prop $a 'speed') - 1.1) -lt 0.001 } 3)
+    Check 'user speed change during a nudge reaches the room exactly' $ok ("nudged={0} a={1}" -f $nudged, (Get-Prop $a 'speed'))
+    Invoke-Mpv $a @('set_property', 'speed', 1) | Out-Null
+    [void](Wait-Until { (Near-Speed $b 1) -and (Near-Speed $c 1) } 3)
 
     Invoke-Mpv $b @('playlist-next') | Out-Null
     $ok = Wait-Until { (Get-Prop $a 'filename') -eq $name2 -and (Get-Prop $c 'filename') -eq $name2 } 5
