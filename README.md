@@ -50,7 +50,7 @@ Pause, play, seeking, speed and episode changes reach everyone, whoever makes th
 
 When someone switches episodes, the others open the file with the same name from their playlist, or the one at the same playlist position if the names differ (different releases of a show, for example). Files are compared by duration: if yours differs from the host's by more than a second, the script warns you and stops syncing until you are on the same file.
 
-The host can limit control under Control (Управление): Everyone (Все участники) or Only me (Только я). With Only me, a guest who pauses, seeks or switches episodes is put back to where the host is.
+The host decides under Who controls playback (Кто управляет просмотром). Everyone (Все) means anyone can pause, seek, change speed or switch episodes. Only me (Только я) means the guests just watch: a guest who tries any of that is put back to where the host is, with a message saying why.
 
 The menu lists the members with their files, and Show members' time on screen (Время участников на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
 
