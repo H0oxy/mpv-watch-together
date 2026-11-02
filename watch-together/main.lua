@@ -244,10 +244,11 @@ local function current_room()
     return room
 end
 
+-- with_time: the on-screen panel, which keeps lines short so they stay in the right part of the screen.
 local function member_label(m, with_time)
-    local parts = { short(m.name, 24) }
+    local parts = { short(m.name, with_time and 20 or 24) }
     if m.host then parts[#parts + 1] = "(" .. T("host_tag") .. ")" end
-    parts[#parts + 1] = "— " .. short(m.file, 40)
+    parts[#parts + 1] = "— " .. short(m.file, with_time and 28 or 40)
     if with_time and m.pos then parts[#parts + 1] = fmt_time(m.pos) end
     if with_time and m.off then parts[#parts + 1] = string.format("(%+.1f %s)", m.off, T("seconds")) end
     if m.paused then parts[#parts + 1] = "[" .. T("paused_tag") .. "]" end
@@ -267,7 +268,12 @@ local function update_panel()
     local list = r.members or {}
     for i = 1, math.min(#list, PANEL_LINES) do lines[#lines + 1] = ass_escape(member_label(list[i], true)) end
     if #list > PANEL_LINES then lines[#lines + 1] = T("more", #list - PANEL_LINES) end
-    panel.data = "{\\an7\\fs22\\bord2}" .. table.concat(lines, "\\N")
+    -- Top right, below where fullscreen window buttons appear: the top left belongs to mpv's own
+    -- messages (our notices, volume, seek time, stats), which would overlap the panel.
+    local w, h = mp.get_osd_size()
+    panel.res_y = 720
+    panel.res_x = (w and h and w > 0 and h > 0) and math.floor(720 * w / h) or 1280
+    panel.data = string.format("{\\an9\\pos(%d,%d)\\fs18\\bord1.5}", panel.res_x - 20, 50) .. table.concat(lines, "\\N")
     panel:update()
 end
 
@@ -432,7 +438,12 @@ local function apply(paused, target, speed)
         mp.set_property_number("speed", speed)
     end
     local cur = mp.get_property_number("time-pos")
-    if cur and math.abs(cur - target) > o.threshold then
+    -- A seek while paused is invisible, so line up to about a frame then; while playing every seek
+    -- stutters, so only real drift is corrected. The paused limit stays above one frame, or a
+    -- player with a coarse frame rate would seek again on every tick.
+    local fps = mp.get_property_number("container-fps", 25)
+    local limit = paused and math.max(0.1, 1.5 / math.max(fps, 1)) or o.threshold
+    if cur and math.abs(cur - target) > limit then
         -- The picture stands still while an exact seek decodes, and the room keeps playing:
         -- aim ahead by this player's usual seek time so we land level with everyone else.
         if not paused then target = target + seek_latency * speed end

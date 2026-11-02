@@ -61,6 +61,10 @@ Host to guests:
 
 `apply` sets `expected_pause` and `expected_speed`, and records each seek in `own_seeks` (`pos`, `at`, `playing`). A `playback-restart` counts as ours if it landed within 1 s of any recorded target from the last 5 s; that entry is removed. mpv can merge several seeks into one restart, so a single "last target" is not enough. `expected_switch` does the same for files.
 
+### Paused precision
+
+`apply` seeks when the difference exceeds `threshold` (0.3 s) while playing, but only `max(0.1, 1.5 / container-fps)` while paused. A paused seek is invisible, and the limit stays above one frame so a coarse frame rate does not seek on every tick. Measured with 3 players over 5 pauses: gap 0–0.08 s (it was up to 0.3 s).
+
 ### Seek latency
 
 While a seek decodes, the picture stands still and the room keeps playing. `seek_latency` is the smoothed time from our seek command to its restart (only seeks made while playing). Seeks during playback aim `seek_latency * speed` ahead.
@@ -84,7 +88,7 @@ Invite address (host only): with `bind` other than `0.0.0.0`, the clipboard gets
 
 The text is written to `clipboard/text`. e2e checks the `127.0.0.1` case and restores the user's clipboard. The `0.0.0.0` path is checked piecewise (address listing on a real PC, ranking on sample sets), not end to end, because hosting on all interfaces would open a firewall prompt.
 
-The menu entry is found by its `watch-together-leave` command, not by its title. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines).
+The menu entry is found by its `watch-together-leave` command, not by its title. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines). The overlay is anchored top right (`\an9\pos(res_x-20, 50)`, `res_y` 720, `res_x` from the OSD aspect), with names cut to 20 and files to 28 characters. The top left belongs to mpv's own messages (our notices, volume, seek time, stats), and y=50 keeps it below the fullscreen window buttons. Checked with screenshots: notice + panel, stats + panel, and a 640×480 window.
 
 ## Updates
 

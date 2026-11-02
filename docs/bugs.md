@@ -44,6 +44,12 @@ Symptom: with 21 players, "spread" was up to 0.4 s although the players were in 
 ## Leftover test mpv instances
 Symptom: a test run where nobody connects and the status property is empty. Cause: an earlier diagnostic run piped into `Select-Object -First`, which stopped the script before its `finally` and left 12 mpv instances holding the `wt-scale-*` pipe names. Fix: never truncate test output that way; kill leftovers by pipe name (`CommandLine -match 'wt-'`), never all mpv processes.
 
+## Members panel overlapped mpv's messages
+Symptom (seen by the user): the on-screen member list sat on top of other text. Cause: the panel was anchored top left, where mpv draws OSD messages (our notices, volume, seek time) and the stats page. Fix: anchor it top right, below the fullscreen window buttons, with shorter lines and a smaller font. Verified with screenshots of panel + notice, panel + stats, and a 640×480 window.
+
+## Players up to 0.3 s apart while paused
+Symptom: the panel showed "+0.3 s" for a paused guest. Cause: the drift threshold was the same while paused as while playing. Fix: about one frame while paused (see development.md, paused precision). Verified: gap 0–0.08 s over 5 pauses with 3 players.
+
 ## Episode switch echo
 Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again, and quick switches could bounce back and forth. Fix: a file change made to follow the room (`expected_switch` matches `playlist-pos`) is not reported as a user action. Verified: e2e "stable: no ping-pong"; episode changes from host and guests.
 
