@@ -28,6 +28,26 @@ mpv Lua/JS scripts have no sockets. PowerShell 5.1 ships with Windows, so the fr
 
 mpv 0.40+ binds right-click to `select/context-menu`, which shows the native Windows menu built from the `menu-data` property. select.lua fills that property from menu.conf and rewrites it when its items change. The plugin observes `menu-data` and re-inserts its submenu at the top whenever it is missing or stale. This way the user's menu.conf is never edited.
 
-## Sync model
+## Sync model: star, host is the only authority
 
-Host is the clock: it sends `tick` every second, and the joiner corrects drift over 0.3 s with an exact seek. User actions on either side are sent as full states. Applying them is idempotent, so echoes stop after one round.
+With more than two people, letting every player broadcast its own actions leads to disagreement when two act at once. In protocol 2:
+
+- Guests connect only to the host.
+- A guest's action is a request.
+- The host applies requests in arrival order and broadcasts each result with an increasing `epoch` and `by`.
+
+Everyone ends up in the last state the host broadcast. The host sends `tick` every second; guests correct drift over 0.3 s with an exact seek, and ignore ticks older than their own unanswered request. A mesh (everyone to everyone) would need N² links through Porthole and an agreement protocol; the star needs one link per guest.
+
+Cost: the host's upload grows with the guests (tick + room list per guest per second, about 0.3–3 KB each). Measured with 20 guests on one PC: host bridge about 2.5% of one core.
+
+## "Only me" control is enforced by guests and the host
+
+The host refuses requests with `control=host` and answers with `sync`. Guests know the mode from the `room` message, so they revert locally right away instead of waiting for the refusal. That makes a forbidden pause blink for a moment instead of playing on for a round trip.
+
+## Names from Steam
+
+Porthole connects Steam friends but exposes no API. Steam stores the persona name of every account that signed in on this PC in `config\loginusers.vdf`; the one with `MostRecent "1"` is the current user. The plugin reads that once at startup. It falls back to `%USERNAME%`, and `name=` overrides both.
+
+## Updates from GitHub releases, with a question
+
+The user asked for a check at every mpv start and a question before installing. Updates come from releases, not from every push to `main`, so a half-done commit never reaches users. Files are downloaded to a temp folder and copied only when all downloads succeeded and `main.lua` is present. The new code runs after the next mpv start, because the loaded script cannot replace itself.

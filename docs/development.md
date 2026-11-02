@@ -3,83 +3,126 @@
 ## Layout
 
 ```
-watch-together/main.lua    menu, sync logic, OSD (runs inside mpv)
-watch-together/bridge.ps1  TCP <-> mpv IPC relay (child process of mpv)
-tests/e2e.ps1              two headless mpv instances over loopback
+watch-together/main.lua     menu, sync logic, OSD, updater UI (runs inside mpv)
+watch-together/bridge.ps1   TCP <-> mpv IPC relay; host: many guests, join: one link
+watch-together/sysinfo.ps1  startup: Windows display language + Steam persona name, as JSON
+watch-together/update.ps1   GitHub release check / install
+tests/e2e.ps1               host + 2 guests over loopback, 25 checks
+tests/scale.ps1             host + N guests, load check (not run by e2e)
 install.bat, uninstall.bat
 ```
 
-## How it fits together
+## Processes and messages
 
-1. A menu click sends `script-message watch-together-host|join|join-clipboard|leave`.
-2. `main.lua` makes sure `input-ipc-server` is set (it sets `mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with `subprocess` (async, `playback_only=false`). Aborting that command kills the bridge.
-3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [data]`, where kind is `listening | connecting | connected | disconnected | error | in`.
-4. Lua to bridge: broadcast `script-message watch-together-out <json>`. The bridge sees it as an IPC `client-message` event.
-5. The bridge exits when the mpv pipe closes. The host accepts a new connection that replaces the old one. The joiner retries every 2 s.
+1. A menu click sends `script-message watch-together-<action>` (`host`, `join`, `join-clipboard`, `leave`, `control <all|host>`, `panel`, `update`, `install`).
+2. `main.lua` makes sure `input-ipc-server` is set (`mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with an async `subprocess` (`playback_only=false`). Aborting that command kills the bridge.
+3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`.
+4. Lua to bridge: broadcast `script-message watch-together-out <target> <json>`, where target is a peer id or `*` (all peers). The bridge sees it as an IPC `client-message`.
+5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. The host refuses connections beyond `-MaxPeers` (`max_guests`). Lines over 1 MB are dropped.
 
-## Peer protocol (newline-delimited JSON, UTF-8)
+## Protocol (version 2, newline-delimited JSON)
+
+The topology is a star. The host is the only authority; guests talk only to the host.
+
+Guest to host:
 
 | `t` | fields | meaning |
 |---|---|---|
-| `hello` | `dur`, `name`, `pl`, `follow` | sent on connect and on every file load; `pl` is the 0-based `playlist-pos`. With `follow=true`, the receiver switches to that episode: first a playlist entry with the same file name, else the same `pl` index. The host sends `follow=true` on connect, and both sides send it on a file change that they did not make to follow the friend (`expected_switch`). If no switch happens, the host answers with `state` ev=`sync` |
-| `state` | `ev`, `pos`, `dur`, `paused`, `speed` | `ev`: `pause`, `seek`, `speed` (user action, shown on OSD), `sync`, `tick` (host heartbeat, 1 s) |
-| `ping` / `pong` | `id` | RTT estimate (smoothed), used to project the remote position |
+| `hello` | `v`, `name` | first message; `v` must be 2 |
+| `req` | `ev`, `pos`, `paused`, `speed`, `dur`, `file`, `pl` | a local user action: `ev` is `pause`, `seek`, `speed` or `file` |
+| `status` | `file`, `pos`, `paused`, `rtt` | every second, for the member list |
+| `ping` | `id` | every second; the host answers `pong` |
 
-Applying a state is idempotent: it sets pause or speed only if they differ, and seeks only if the drift is over `threshold` (0.3 s). Echoes therefore die after one round. Local changes caused by a remote state are not re-sent: `expected_pause` and `expected_speed` filter property changes, and `own_seek` (target and time of our last follow seek) filters `playback-restart`. A restart counts as ours only if it landed within 1 s of that target, so a user seek merged with ours is still sent.
+Host to guests:
 
-Only the joiner applies `tick`, and only after a 0.25 s delay (the position is advanced by the delay). It skips the tick while `seeking` or within 1.5 s of its own pause/seek/speed (`last_local_action`). The delay lets mpv deliver queued `seek`/`playback-restart` events of a user seek before the drift is judged. States whose `dur` differs by more than 1 s are ignored and trigger a one-time "different file" warning.
+| `t` | fields | meaning |
+|---|---|---|
+| `state` | `epoch`, `ev`, `by`, `pos`, `paused`, `speed`, `dur`, `file`, `pl`, optional `you` | `ev`: `sync` (to one guest: on hello, or refusing a request), `pause`/`seek`/`speed`/`file` (a change, to all, `epoch` +1, `by` = who did it), `tick` (every second, same `epoch`) |
+| `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host) |
+| `notice` | `key` (`joined`/`left`), `name` | for the OSD |
+| `welcome` | `you` | instead of `sync` when the host has no file loaded |
+| `pong` | `id` | RTT |
+
+### Host
+
+- A local action (pause observer, speed observer, `playback-restart` that is not ours, `file-loaded`) is broadcast as a new epoch with `by` = host name.
+- `req` with `control=all`: the host applies it to itself (position projected by the guest's `rtt/2`) and broadcasts it with `by` = guest name. With `control=host` or invalid data, the host answers that guest with `sync`. A `file` request makes the host follow the file (`follow_file`); the broadcast happens on `file-loaded` with `by` = `switch_by`.
+- Names are made unique (`Name (p2)`); the guest learns its room name from `you`.
+
+### Guest
+
+- A local action becomes a `req`, and `pending.count` goes up. With `control=host`, it is reverted to the last host state instead (`apply_host_state`), with an OSD notice.
+- A non-tick state with `by` = our room name is the answer to our own request. It is not applied, because we already did that locally and may have done more since. It only lowers `pending.count`.
+- Other non-tick states are applied right away: follow the file if it differs, else check the duration, then `apply`.
+- A tick is handled 0.25 s later. It is skipped while a request is pending (up to 3 s), while `seeking`, within 1.5 s of our own action, or if its epoch is older than the last state. Otherwise it is applied like a state (drift over `threshold` means a seek).
+- The host position is projected as `pos + (now - received + rtt/2) * speed` while playing.
+
+### Not reporting our own changes
+
+`apply` sets `expected_pause` and `expected_speed`, and records each seek in `own_seeks` (`pos`, `at`, `playing`). A `playback-restart` counts as ours if it landed within 1 s of any recorded target from the last 5 s; that entry is removed. mpv can merge several seeks into one restart, so a single "last target" is not enough. `expected_switch` does the same for files.
+
+### Seek latency
+
+While a seek decodes, the picture stands still and the room keeps playing. `seek_latency` is the smoothed time from our seek command to its restart (only seeks made while playing). Seeks during playback aim `seek_latency * speed` ahead.
 
 ## Options
 
-`%APPDATA%\mpv\script-opts\watch_together.conf`:
+`%APPDATA%\mpv\script-opts\watch_together.conf`: `port`, `bind`, `address`, `threshold`, `lang`, `name`, `control`, `max_guests`, `auto_update`. See README for defaults.
 
-```
-port=47800
-bind=127.0.0.1      # host listen address; 0.0.0.0 for LAN/Tailscale
-address=127.0.0.1   # where "join" connects (Porthole maps the host port here)
-threshold=0.3
-lang=auto           # auto | ru | en
-```
+## Language and name
 
-## Language
+`sysinfo.ps1` runs once at startup (async) when `lang=auto` or `name` is empty. It prints `{"lang": CurrentUICulture.Name, "steam": PersonaName}`. The Steam name comes from `<SteamPath>\config\loginusers.vdf` (the account with `MostRecent "1"`, else the first). `SteamPath` is read from `HKCU\Software\Valve\Steam`. Any `ru*` language gives Russian. Until the answer arrives (under a second), the menu is in English and the name is `%USERNAME%`. User-facing text lives in `STRINGS` (`ru`, `en`) and goes through `T(key, ...)`.
 
-All user-facing text is in the `STRINGS` table in `main.lua` (`ru`, `en`), formatted through `T(key, ...)`. With `lang=auto`, the script runs `powershell -Command [Globalization.CultureInfo]::CurrentUICulture.Name` once at startup (async). Any `ru*` result gives Russian, anything else gives English. Until the answer arrives (under a second), the menu is in English. The menu entry is found by its `watch-together-leave` command, not by its title, because the title changes with the language. The detected language is published in `user-data/watch-together/lang`.
+The menu entry is found by its `watch-together-leave` command, not by its title. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines).
 
-Verified: `lang=ru` and `lang=en` give the full menu in that language, and `auto` gave `ru` on a Windows whose first display language is `ru`. Not verified on an English Windows. Note that a PowerShell started from this dev environment reports `en-US` while mpv started normally reports `ru`.
+## Updates
 
-## Test
+`update.ps1 -Dir <script dir> -Current <VERSION>` prints `available <tag>` or `latest` (GitHub `releases/latest` of `H0oxy/mpv-watch-together`). With `-Install <tag>`, it lists `contents/watch-together?ref=<tag>`, downloads every file into a temp folder, checks that `main.lua` is there, then copies the files over the script folder and prints `updated <tag>`. Errors print `error <text>`. `main.lua` checks 3 s after startup and asks with `mp.input.select`.
+
+Release process:
+
+1. Bump `VERSION` in `main.lua`.
+2. Commit and push.
+3. Create the GitHub release `v<VERSION>` from `main`.
+
+Every user is offered the new release the next time they start mpv. Bump `PROTOCOL` when old clients can no longer talk to new ones.
+
+## Tests
 
 ```
 powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe
+powershell -ExecutionPolicy Bypass -File tests\scale.ps1 -Mpv C:\programs\mpv\mpv.exe -GuestCount 20
 ```
 
-It starts two `--no-config --vo=null` mpv instances with port 47899. Each has a two-episode playlist (600 s and 400 s test videos in `%TEMP%`). It checks:
+`e2e.ps1` runs a host and two guests with the same name (port 47899, `auto_update=no`, `lang=en`). Each player has a two-episode playlist (600 s and 400 s test videos in `%TEMP%`). It checks:
 
 - connect;
-- the joiner follows the host's episode and position;
-- friend file names are known;
-- pause, seek (paused and playing) and speed both ways;
-- 6 joiner seeks at random moments against the host's ticks, none lost;
-- drift under 0.3 s over 5 s;
-- manual next/previous episode both ways;
+- guests follow the host's episode and position;
+- unique names and the member list;
+- pause, seek and speed from the host and from guests;
+- 6 random guest seeks against ticks;
+- two guests seeking to different places at once settle on one;
+- spread under 0.3 s;
+- episode changes both ways;
+- "only host" reverting guest pause, seek and episode;
+- control back to everyone;
+- a late joiner from another episode and time;
 - no echo loop;
-- disconnect detection.
+- leaving.
 
-Last run (mpv 0.41.0-dev): all 16 checks passed, max drift 0.12 s. A separate stress run (5 seeds, 12 random joiner seeks or pauses each, 60 actions in total) lost none.
+Spread is measured with every playing position moved back to the time of the first read, because the reads are sequential.
 
-Manual checks done once (not automated):
+Last results (mpv 0.41.0-dev, one PC):
 
-- the menu item appears at the top of the right-click menu in a real window and survives select.lua rewrites;
-- the "У тебя / У друга" items show file names, with `&` escaped;
-- different file names fall back to the playlist index;
-- auto-advance at the end of an episode on both sides ends on the same episode with no switching back and forth;
-- join before the host exists keeps retrying;
-- the host leaving and coming back reconnects;
-- a busy port shows an error;
-- no orphan `bridge.ps1` after mpv is killed.
+- e2e: 25/25.
+- scale with 5 guests: 6/6 runs.
+- scale with 20 guests: connect + sync 1.4 s, pause to all 0.28 s, guest seek to all 0.36 s, spread under 0.2 s, host bridge about 2.5% of a core.
+
+`scale.ps1` stops its mpv instances in `finally`. Do not pipe it into `Select-Object -First`: that stops the script before `finally` runs and leaves mpv instances holding the test pipe names.
 
 ## Conventions
 
-- `bridge.ps1` stays ASCII: Windows PowerShell 5.1 reads BOM-less scripts as ANSI. All user-facing text lives in `main.lua` (UTF-8).
-- `install.bat` / `uninstall.bat`: UTF-8 with `chcp 65001`, CRLF line endings.
-- mpv Lua is LuaJIT/5.1: no `//` operator, no `goto` assumptions.
+- The `.ps1` files stay ASCII: Windows PowerShell 5.1 reads BOM-less scripts as ANSI. All user-facing text lives in `main.lua` (UTF-8).
+- `install.bat` / `uninstall.bat`: UTF-8 with `chcp 65001`, CRLF, kept as-is by `.gitattributes`.
+- mpv Lua is LuaJIT/5.1: no `//`, no `goto`.
+- Debug traces: `--msg-level=watch_together=debug` logs local actions, requests, received states and follow seeks.

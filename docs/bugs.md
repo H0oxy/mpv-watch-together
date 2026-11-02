@@ -23,8 +23,29 @@ Fix:
 
 Verified: 60 random actions in the stress run with no loss; e2e "joiner seeks vs ticks".
 
+## Guest's own answer undoes its newer action (protocol 2)
+Symptom: a guest unpauses and seeks right away, and the whole room ends up at the old position (scale test with 5 guests failed about 1 run in 2). Debug log of the guest:
+1. `local action pause at 3.4`.
+2. `state e2 pause by P1 pos=3.45` arrives after mpv executed the seek to 250, but before its `playback-restart` reached the script.
+3. The guest applied the state (`follow seek 250.04 -> 3.55`).
+4. The restart then reported a "user seek" at the current position, 3.55, so the host followed it back.
+
+Fix: a state whose `by` is our own room name is never applied, only counted against `pending`. We already did that action locally. Verified: scale with 5 guests 6/6 runs (was failing about half), e2e 25/25.
+
+## Merged follow seeks reported as user seeks
+Cause: two quick follow seeks can produce one or two restarts; remembering only the last target made the other restart look like a user action. Fix: `own_seeks` keeps every follow seek of the last 5 s, and a restart near any of them is ours.
+
+## Players that follow a seek land behind
+Symptom: after a guest's seek during playback, the others were up to about 0.3 s behind, right at the correction threshold, so the spread check failed now and then. Cause: an exact seek decodes from a keyframe while the room keeps playing. Fix: measure each player's seek time (`seek_latency`) and aim that far ahead when seeking during playback.
+
+## Test artifact: sequential reads look like drift
+Symptom: with 21 players, "spread" was up to 0.4 s although the players were in sync. Cause: the test reads positions one by one, and playing players move during the reads. Fix: tests move each playing position back by the time since the first read.
+
+## Leftover test mpv instances
+Symptom: a test run where nobody connects and the status property is empty. Cause: an earlier diagnostic run piped into `Select-Object -First`, which stopped the script before its `finally` and left 12 mpv instances holding the `wt-scale-*` pipe names. Fix: never truncate test output that way; kill leftovers by pipe name (`CommandLine -match 'wt-'`), never all mpv processes.
+
 ## Episode switch echo
-Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again, and quick switches could bounce back and forth. Fix: `hello.follow` is sent only for file changes we did not make to follow the friend (`expected_switch` matches `playlist-pos`). The host does not answer a hello with a switch, only on connect. Verified: e2e "stable: no ping-pong"; manual auto-advance on both sides.
+Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again, and quick switches could bounce back and forth. Fix: a file change made to follow the room (`expected_switch` matches `playlist-pos`) is not reported as a user action. Verified: e2e "stable: no ping-pong"; episode changes from host and guests.
 
 ## "Different file" warning flashes at episode boundaries
 Cause: for a moment the peer is already on the next episode. Fix: no warning for 3 s after a file load or a follow switch (`quiet_until`).
