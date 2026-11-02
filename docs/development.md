@@ -9,6 +9,8 @@ watch-together/sysinfo.ps1  startup: Windows display language + Steam persona na
 watch-together/update.ps1   GitHub release check / install
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
+tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
+tests/slow_server.py        throttled HTTP file server for buffering.ps1
 install.bat, uninstall.bat
 ```
 
@@ -31,15 +33,16 @@ Guest to host:
 | `hello` | `v`, `name` | first message; `v` must be 2 |
 | `req` | `ev`, `pos`, `paused`, `speed`, `dur`, `file`, `pl` | a local user action: `ev` is `pause`, `seek`, `speed` or `file` |
 | `status` | `file`, `pos`, `paused`, `rtt` | every second, for the member list |
+| `wait` | `reason` (`buffering`, `loading` or empty) | sent when this player starts or stops waiting |
 | `ping` | `id` | every second; the host answers `pong` |
 
 Host to guests:
 
 | `t` | fields | meaning |
 |---|---|---|
-| `state` | `epoch`, `ev`, `by`, `pos`, `paused`, `speed`, `dur`, `file`, `pl`, optional `you` | `ev`: `sync` (to one guest: on hello, or refusing a request), `pause`/`seek`/`speed`/`file` (a change, to all, `epoch` +1, `by` = who did it), `tick` (every second, same `epoch`) |
-| `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host) |
-| `notice` | `key` (`joined`/`left`), `name` | for the OSD |
+| `state` | `epoch`, `ev`, `by`, `pos`, `paused`, `speed`, `dur`, `file`, `pl`, optional `you`, optional `wait[]` | `ev`: `sync` (to one guest: on hello, or refusing a request), `pause`/`seek`/`speed`/`file` (a change, to all, `epoch` +1, `by` = who did it), `hold`/`resume` (the room starts/stops waiting), `tick` (every second, same `epoch`). `wait` lists `{name, reason}` while the room waits |
+| `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host), `wait` |
+| `notice` | `key` (`joined`/`left`/`gave_up`), `name` | for the OSD |
 | `welcome` | `you` | instead of `sync` when the host has no file loaded |
 | `pong` | `id` | RTT |
 
@@ -60,6 +63,39 @@ Host to guests:
 ### Not reporting our own changes
 
 `apply` sets `expected_pause` and `expected_speed`, and records each seek in `own_seeks` (`pos`, `at`, `playing`). A `playback-restart` counts as ours if it landed within 1 s of any recorded target from the last 5 s; that entry is removed. mpv can merge several seeks into one restart, so a single "last target" is not enough. `expected_switch` does the same for files.
+
+### Waiting for a stalled member
+
+Every player checks itself every 0.25 s (`current_wait`). The reasons are:
+
+- `loading`: `start-file` was more than 0.7 s ago without a `playback-restart`. `end-file` clears it, so a file that fails to open does not block.
+- `buffering`: `paused-for-cache` has been on for more than 0.5 s. It stays on until `cache_ready()`, meaning a local file, `demuxer-cache-idle`, EOF, or at least 2 s of `demuxer-cache-duration`. Otherwise the room would resume and stall again at once.
+
+A change is reported to the host with `wait`; the host checks its own state directly.
+
+The host keeps `holding`, `want_paused` and `wait_list`. `update_hold()` runs on every `wait`, on disconnects, and every second. The waiting list includes:
+
+- the host itself;
+- every guest with a `wait`, protocol 2, heard from in the last 6 s, and waiting less than `wait_timeout`.
+
+A guest over the limit is dropped once (`gave_up` notice to all).
+
+- When the list becomes non-empty, the host pauses itself (`expected_pause`) and broadcasts `hold` with `paused = true`.
+- When it becomes empty, the host restores `want_paused` and broadcasts `resume`.
+
+`want_paused` follows the users' pause actions, so play pressed during a hold is remembered. A host play is undone locally; a guest play request is answered with a `hold` state to that guest. Ticks carry `wait`, and everyone re-shows "waiting for ..." each second; the waiting player sees "you".
+
+Old 1.2 guests never send `wait`, and they apply `hold`/`resume` like any other paused/playing state, so `PROTOCOL` stays 2.
+
+Test: `tests\buffering.ps1` (needs python). B streams the test videos from `tests\slow_server.py`, whose rate comes from a file. B starts at 45 KB/s, a bit above the ~34 KB/s bitrate, with `--cache-secs=5`; unthrottled, the server stuffs megabytes into the TCP buffers and a later slowdown shows only after minutes. The test checks:
+
+- buffering pauses everyone and reports the reason;
+- play during the hold is held back;
+- everyone resumes in sync;
+- a slow episode load waits with reason `loading`;
+- a 6 s timeout plays on.
+
+Last run: 8/8. Screenshots checked: the host sees "Ждём: Аня (буферизация)", the guest sees "Ждём: тебя (буферизация)", then "Все готовы, продолжаем".
 
 ### Paused precision
 

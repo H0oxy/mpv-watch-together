@@ -9,7 +9,7 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.2.1"
+local VERSION = "1.3.0"
 local PROTOCOL = 2
 
 local o = {
@@ -22,6 +22,8 @@ local o = {
     name = "",              -- shown to others; empty means the Steam name, else the Windows user name
     auto_update = true,     -- check GitHub releases at every start and offer a newer one
     max_guests = 50,        -- host: connections beyond this are refused
+    wait_for_others = true, -- host: pause the room while someone is buffering or loading a file
+    wait_timeout = 30,      -- host: seconds to wait for one member before playing on without them
 }
 options.read_options(o, "watch_together")
 
@@ -85,6 +87,12 @@ local STRINGS = {
         up_to_date = "Установлена последняя версия (%s)",
         update_failed = "Не удалось проверить обновления: %s",
         seconds = "с",
+        waiting = "Ждём: %s",
+        reason_buffering = "буферизация",
+        reason_loading = "загрузка файла",
+        you_word = "тебя",
+        all_ready = "Все готовы, продолжаем",
+        gave_up = "Не дождались: %s, продолжаем",
         more = "…и ещё %d",
     },
     en = {
@@ -146,6 +154,12 @@ local STRINGS = {
         up_to_date = "You have the latest version (%s)",
         update_failed = "Could not check for updates: %s",
         seconds = "s",
+        waiting = "Waiting for: %s",
+        reason_buffering = "buffering",
+        reason_loading = "loading the file",
+        you_word = "you",
+        all_ready = "Everyone is ready, playing on",
+        gave_up = "Gave up waiting for %s, playing on",
         more = "…and %d more",
     },
 }
@@ -171,10 +185,19 @@ local quiet_until = 0       -- no "different file" warning right after an episod
 local warned_mismatch = false
 local last_local_action = -10
 
+-- Waiting: this player is buffering or still loading a file, so the room should pause for it.
+local my_wait               -- nil | "buffering" | "loading"
+local my_wait_since = 0
+local buffering_since       -- paused-for-cache seen at this time (debounced)
+local loading_since         -- start-file seen, first playback-restart not yet
+
 -- host
 local epoch = 0             -- bumped on every discrete change; guests use it to drop stale ticks
-local members = {}          -- bridge id -> {name, file, dur, pos, paused, rtt, at, v}
+local members = {}          -- bridge id -> {name, file, dur, pos, paused, rtt, at, v, wait, wait_since, gave_up}
 local switch_by             -- name of the guest whose request made the host switch files
+local holding = false       -- the room is paused because someone is waiting
+local want_paused = false   -- what the room's users last asked for, applied when the hold ends
+local wait_list = {}        -- {name, reason} of the members we are waiting for
 
 -- guest
 local host_state            -- last state from the host, plus .received
@@ -214,7 +237,12 @@ local function in_room() return status == "connected" or status == "lost" or sta
 
 local function local_member()
     return { name = my_name, file = mp.get_property("filename"), pos = mp.get_property_number("time-pos"),
-             paused = mp.get_property_native("pause"), host = role == "host" }
+             paused = mp.get_property_native("pause"), host = role == "host", wait = my_wait }
+end
+
+-- Peer data: only known reasons become text.
+local function reason_text(r)
+    return (r == "buffering" or r == "loading") and T("reason_" .. r) or nil
 end
 
 -- Host: the member list as everyone sees it; off = seconds ahead (+) or behind (-) the host.
@@ -229,7 +257,8 @@ local function room_info()
     for _, id in ipairs(ids) do
         local m = members[id]
         -- Every guest gets the whole list each second, so keep entries small.
-        local e = { name = m.name, file = m.file and short(m.file, 80), pos = m.pos, paused = m.paused, stale = now - m.at > 6 }
+        local e = { name = m.name, file = m.file and short(m.file, 80), pos = m.pos, paused = m.paused,
+                    stale = now - m.at > 6, wait = m.wait }
         if m.pos and me.pos and m.file == me.file then
             local pos = m.pos + (m.paused and 0 or (now - m.at + (m.rtt or 0) / 2) * speed)
             e.off = pos - me.pos
@@ -252,6 +281,7 @@ local function member_label(m, with_time)
     if with_time and m.pos then parts[#parts + 1] = fmt_time(m.pos) end
     if with_time and m.off then parts[#parts + 1] = string.format("(%+.1f %s)", m.off, T("seconds")) end
     if m.paused then parts[#parts + 1] = "[" .. T("paused_tag") .. "]" end
+    if reason_text(m.wait) then parts[#parts + 1] = "[" .. reason_text(m.wait) .. "]" end
     if m.stale then parts[#parts + 1] = "[" .. T("stale_tag") .. "]" end
     return table.concat(parts, " ")
 end
@@ -480,7 +510,8 @@ local function host_state_msg(ev, by, pos, paused, speed)
              paused = paused,
              speed = speed or mp.get_property_number("speed", 1),
              dur = mp.get_property_number("duration"), file = mp.get_property("filename"),
-             pl = mp.get_property_number("playlist-pos") }
+             pl = mp.get_property_number("playlist-pos"),
+             wait = holding and wait_list or nil }
 end
 
 -- A discrete change: new epoch, sent to everyone.
@@ -488,6 +519,66 @@ local function broadcast(ev, by, pos, paused, speed)
     epoch = epoch + 1
     local m = host_state_msg(ev, by, pos, paused, speed)
     if m.pos then send("*", m) end
+end
+
+-- "Аня (буферизация), тебя (загрузка файла)"; entries come from the host, so they are checked.
+local function wait_text(list)
+    local parts = {}
+    for _, w in ipairs(type(list) == "table" and list or {}) do
+        if type(w) == "table" and type(w.name) == "string" and reason_text(w.reason) then
+            local who = is_me(w.name) and T("you_word") or short(w.name, 24)
+            parts[#parts + 1] = who .. " (" .. reason_text(w.reason) .. ")"
+        end
+    end
+    return table.concat(parts, ", ")
+end
+
+-- Who the room waits for now. Silent or outdated members never block it, and nobody blocks it for
+-- longer than wait_timeout: after that the room plays on and everyone is told whom it gave up on.
+local function waiting_list()
+    local now, list = mp.get_time(), {}
+    if my_wait and now - my_wait_since <= o.wait_timeout then list[1] = { name = my_name, reason = my_wait } end
+    local ids = {}
+    for id in pairs(members) do ids[#ids + 1] = id end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        local g = members[id]
+        if g.wait and g.v == PROTOCOL and now - g.at <= 6 then
+            if now - g.wait_since <= o.wait_timeout then
+                list[#list + 1] = { name = g.name, reason = g.wait }
+            elseif not g.gave_up then
+                g.gave_up = true
+                osd(T("gave_up", g.name))
+                send("*", { t = "notice", key = "gave_up", name = g.name })
+            end
+        end
+    end
+    return list
+end
+
+-- Pause the room while someone waits; resume, as the users last wanted, once nobody does.
+local function update_hold()
+    if role ~= "host" then return end
+    local list = (o.wait_for_others and status == "hosting") and waiting_list() or {}
+    wait_list = list
+    if #list > 0 and not holding then
+        holding = true
+        if not mp.get_property_native("pause") then
+            want_paused = false
+            expected_pause = true
+            mp.set_property_native("pause", true)
+        end
+        broadcast("hold", nil, nil, true)
+        osd(T("waiting", wait_text(list)))
+    elseif #list == 0 and holding then
+        holding = false
+        if not want_paused and mp.get_property_native("pause") then
+            expected_pause = false
+            mp.set_property_native("pause", false)
+        end
+        broadcast("resume", nil, nil, want_paused)
+        osd(T("all_ready"))
+    end
 end
 
 local function on_guest_message(id, m)
@@ -522,11 +613,22 @@ local function on_guest_message(id, m)
         g.pos = type(m.pos) == "number" and m.pos or nil
         g.paused = m.paused == true
         g.rtt = type(m.rtt) == "number" and m.rtt or nil
+    elseif m.t == "wait" then
+        local r = (m.reason == "buffering" or m.reason == "loading") and m.reason or nil
+        if r ~= g.wait then g.wait, g.wait_since, g.gave_up = r, mp.get_time(), nil end
+        update_hold()
     elseif m.t == "req" then
         if control ~= "all" or not valid_state(m) then
             local s = host_state_msg("sync")  -- puts the guest back
             if s.pos then send(id, s) end
             return
+        end
+        if m.ev == "pause" then
+            want_paused = m.paused
+            if holding and not m.paused then
+                send(id, host_state_msg("hold"))  -- back to paused, with whom we are waiting for
+                return
+            end
         end
         if m.ev == "file" then
             if follow_file(m) then
@@ -570,7 +672,10 @@ local function on_host_message(m)
         local sample = mp.get_time() - m.id
         if sample >= 0 and sample < 10 then rtt = rtt * 0.7 + sample * 0.3 end
     elseif m.t == "notice" and type(m.name) == "string" then
-        if m.key == "joined" then osd(T("joined", m.name)) elseif m.key == "left" then osd(T("member_left", m.name)) end
+        if m.key == "joined" then osd(T("joined", m.name))
+        elseif m.key == "left" then osd(T("member_left", m.name))
+        elseif m.key == "gave_up" then osd(T("gave_up", is_me(m.name) and T("you_word") or m.name))
+        end
     elseif m.t == "room" and type(m.members) == "table" then
         local before = room and room.control
         room = { control = m.control == "host" and "host" or "all", members = m.members }
@@ -598,9 +703,14 @@ local function on_host_message(m)
             end
             local switching = follow_file(m)
             if not switching and same_file(m.dur) then apply(m.paused, host_now(m), m.speed) end
-            if m.ev == "sync" then osd(T("synced")) else notify(m.ev, m.by, m) end
+            if m.ev == "hold" then osd(T("waiting", wait_text(m.wait)))
+            elseif m.ev == "resume" then osd(T("all_ready"))
+            elseif m.ev == "sync" then osd(T("synced"))
+            else notify(m.ev, m.by, m) end
             return
         end
+        -- Keep "waiting for ..." on screen for as long as the room waits.
+        if m.wait and wait_text(m.wait) ~= "" then osd(T("waiting", wait_text(m.wait))) end
         -- Wait a moment so that mpv's queued seek/restart events of a user action are handled before
         -- the drift is judged, then skip the tick if we are seeking or waiting for the host's answer.
         mp.add_timeout(0.25, function()
@@ -630,6 +740,15 @@ local function local_action(ev)
     last_local_action = mp.get_time()
     mp.msg.debug("local action " .. ev .. " at " .. tostring(mp.get_property_number("time-pos")))
     if role == "host" then
+        if ev == "pause" then
+            want_paused = mp.get_property_native("pause")
+            if holding and not want_paused then  -- play pressed while the room waits: remembered, not done
+                expected_pause = true
+                mp.set_property_native("pause", true)
+                osd(T("waiting", wait_text(wait_list)))
+                return
+            end
+        end
         if status == "hosting" or status == "listening" then broadcast(ev, my_name) end
     elseif role == "join" and (status == "connected" or status == "lost") then
         if room and room.control == "host" then
@@ -644,6 +763,40 @@ local function local_action(ev)
     end
 end
 
+-- After buffering, wait until the cache can really keep up, or we would stall again at once.
+local function cache_ready()
+    if not mp.get_property_native("demuxer-via-network") then return true end
+    if mp.get_property_native("demuxer-cache-idle") or mp.get_property_native("eof-reached") then return true end
+    return (mp.get_property_number("demuxer-cache-duration") or 0) >= 2
+end
+
+-- Short stalls (under 0.5 s buffering, 0.7 s loading) are not worth pausing everyone for.
+local function current_wait(now)
+    if loading_since and now - loading_since > 0.7 then return "loading" end
+    if mp.get_property_native("paused-for-cache") then
+        buffering_since = buffering_since or now
+    elseif buffering_since and (my_wait ~= "buffering" or cache_ready()) then
+        buffering_since = nil
+    end
+    if buffering_since and now - buffering_since > 0.5 then return "buffering" end
+    return nil
+end
+
+local function report_wait()
+    if role == "host" then update_hold()
+    elseif role == "join" and (status == "connected" or status == "lost") then
+        send("host", { t = "wait", reason = my_wait or "" })
+    end
+end
+
+mp.add_periodic_timer(0.25, function()
+    local now = mp.get_time()
+    local w = current_wait(now)
+    if w == my_wait then return end
+    my_wait, my_wait_since = w, now
+    report_wait()
+end)
+
 ------------------------------------------------------------------ bridge process
 
 local function stop()
@@ -653,6 +806,7 @@ local function stop()
         mp.abort_async_command(h)
     end
     role, members, room, host_state, pending, switch_by, room_name = nil, {}, nil, nil, nil, nil, nil
+    holding, wait_list = false, {}
     set_status("off")
 end
 
@@ -689,6 +843,7 @@ local function start(mode, address, port)
         mp.msg.error("bridge.ps1 exited: " .. utils.format_json(res))
     end)
     helper = h
+    want_paused = mp.get_property_native("pause") == true
     set_status(mode == "host" and "listening" or "connecting")
     return true
 end
@@ -707,6 +862,7 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
             set_status("connected")
             osd(T("in_room"))
             send("host", { t = "hello", v = PROTOCOL, name = my_name })
+            if my_wait then report_wait() end
         end
     elseif kind == "disconnected" then
         if role == "host" then
@@ -717,6 +873,7 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
                 send("*", { t = "notice", key = "left", name = g.name })
             end
             set_status(next(members) and "hosting" or "listening")
+            update_hold()  -- the member we were waiting for may have gone
         else
             host_state, room, pending = nil, nil, nil
             set_status("connecting")
@@ -912,7 +1069,11 @@ mp.register_event("file-loaded", function()
     refresh_menu()
 end)
 
+mp.register_event("start-file", function() loading_since = mp.get_time() end)
+mp.register_event("end-file", function() loading_since = nil end)  -- also when a file fails to open
+
 mp.register_event("playback-restart", function()
+    loading_since = nil
     if loading then loading = false return end  -- start of a file, not a user seek
     -- Ours if we landed where we aimed. A user seek merged with ours lands elsewhere and is still sent.
     local pos, now = mp.get_property_number("time-pos"), mp.get_time()
@@ -932,6 +1093,8 @@ end)
 
 mp.add_periodic_timer(1, function()
     if role == "host" and status == "hosting" then
+        update_hold()  -- timeouts and members that went silent
+        if holding then osd(T("waiting", wait_text(wait_list))) end
         local s = host_state_msg("tick")
         if s.pos then send("*", s) end
         send("*", room_info())

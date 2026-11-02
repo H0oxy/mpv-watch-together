@@ -41,6 +41,9 @@ Symptom: after a guest's seek during playback, the others were up to about 0.3 s
 ## Test artifact: sequential reads look like drift
 Symptom: with 21 players, "spread" was up to 0.4 s although the players were in sync. Cause: the test reads positions one by one, and playing players move during the reads. Fix: tests move each playing position back by the time since the first read.
 
+## Test artifact: throttling a stream showed no buffering
+Symptom: the guest played on for 30+ s at 6 KB/s, a sixth of the bitrate. Cause: with the server unthrottled at start, it pushed megabytes into the loopback TCP buffers, and mpv kept reading from them. `--demuxer-max-bytes` did not limit this, and mpv showed `Cache: 599s`. Fix: in the test, start the stream at a rate slightly above the bitrate with `--cache-secs=5`, then slow it down; buffering starts within seconds.
+
 ## Leftover test mpv instances
 Symptom: a test run where nobody connects and the status property is empty. Cause: an earlier diagnostic run piped into `Select-Object -First`, which stopped the script before its `finally` and left 12 mpv instances holding the `wt-scale-*` pipe names. Fix: never truncate test output that way; kill leftovers by pipe name (`CommandLine -match 'wt-'`), never all mpv processes.
 

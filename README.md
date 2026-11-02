@@ -52,6 +52,8 @@ When someone switches episodes, the others open the file with the same name from
 
 The host decides under Who controls playback (Кто управляет просмотром). Everyone (Все) means anyone can pause, seek, change speed or switch episodes. Only me (Только я) means the guests just watch: a guest who tries any of that is put back to where the host is, with a message saying why.
 
+If someone's player stalls, the room waits for them. That happens when a player is buffering (a stream or a slow network drive can't keep up) or still opening the file after an episode change. Everyone's player pauses, and everyone sees whom the room is waiting for and why, for example "Waiting for: Alex (buffering)" ("Ждём: Alex (буферизация)"); the person it waits for sees "you". Pressing play meanwhile is remembered but not done. Once everyone is ready, playback resumes for all at the same spot. Short stalls under half a second are ignored. After 30 seconds the room gives up on that person and plays on, saying so.
+
 The menu lists the members with their files, and Show members' time on screen (Время участников на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
 
 ## How sync works
@@ -87,6 +89,8 @@ lang=auto           # auto, ru or en
 name=               # your name in the room; empty means the Steam name
 control=all         # host's default control: all or host
 max_guests=50       # host refuses connections beyond this
+wait_for_others=yes # host pauses the room while someone buffers or loads a file
+wait_timeout=30     # seconds to wait for one person before playing on
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 
@@ -101,4 +105,5 @@ Tests start several mpv instances on one PC (`ffmpeg` must be on PATH to generat
 ```powershell
 powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\path\to\mpv.exe
 powershell -ExecutionPolicy Bypass -File tests\scale.ps1 -Mpv C:\path\to\mpv.exe -GuestCount 20
+powershell -ExecutionPolicy Bypass -File tests\buffering.ps1 -Mpv C:\path\to\mpv.exe   # needs python
 ```
