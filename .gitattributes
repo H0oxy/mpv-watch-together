@@ -1,0 +1,2 @@
+# Keep CRLF in batch files exactly as committed; cmd.exe misparses some LF-only scripts.
+*.bat -text
