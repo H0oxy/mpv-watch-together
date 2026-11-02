@@ -6,6 +6,7 @@ param(
     [string]$Install = ''   # tag to install; empty means only check
 )
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)  # .NET error texts are localized
 $Repo = 'H0oxy/mpv-watch-together'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
