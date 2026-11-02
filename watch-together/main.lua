@@ -17,6 +17,7 @@ local o = {
     bind = "127.0.0.1",     -- host listens here; Porthole forwards to localhost
     address = "127.0.0.1",  -- where "join" connects; with Porthole the host's port appears locally
     threshold = 0.5,        -- seconds of drift before a correcting seek; less is caught up by speed
+    soft_sync = true,       -- guest: catch up small drift by playing up to 5 % faster or slower; no = seek over 0.3 s
     lang = "auto",          -- auto (Windows display language) | ru | en
     control = "all",        -- host default: all | host (only the host controls playback)
     name = "",              -- shown to others; empty means the Steam name, else the Windows user name
@@ -54,6 +55,7 @@ local settings = {
     countdown = o.countdown > 0,
     resume_memory = o.resume_memory,
     share_files = o.share_files,
+    soft_sync = o.soft_sync,
     download_to = "video",  -- guest: "video" (the open video's folder) | "downloads"
 }
 do
@@ -139,7 +141,9 @@ local STRINGS = {
         you_word = "тебя",
         all_ready = "Все готовы, продолжаем",
         gave_up = "Не дождались: %s, продолжаем",
-        settings = "Настройки комнаты (когда ты хост)",
+        settings = "Настройки",
+        set_soft = "Догонять комнату плавно (скоростью), без перемотки",
+        when_host = "Когда ты хост:",
         set_wait = "Ждать тех, у кого буферизация или загрузка файла",
         set_countdown = "Отсчёт %d с перед следующей серией",
         set_resume = "Предлагать продолжить с места остановки",
@@ -233,7 +237,9 @@ local STRINGS = {
         you_word = "you",
         all_ready = "Everyone is ready, playing on",
         gave_up = "Gave up waiting for %s, playing on",
-        settings = "Room settings (when you host)",
+        settings = "Settings",
+        set_soft = "Catch up with the room smoothly (by speed), without jumps",
+        when_host = "When you host:",
         set_wait = "Wait for anyone buffering or loading a file",
         set_countdown = "%d s countdown before the next episode",
         set_resume = "Offer to continue where we stopped",
@@ -535,6 +541,9 @@ local function menu_item()
         items[#items + 1] = { type = "submenu", title = T("download_menu"), submenu = sub }
     end
     items[#items + 1] = { type = "submenu", title = T("settings"), submenu = {
+        { title = T("set_soft"), cmd = "script-message watch-together-setting soft_sync", state = st(false, settings.soft_sync) },
+        { type = "separator" },
+        { title = T("when_host"), state = { "disabled" } },
         { title = T("set_wait"), cmd = "script-message watch-together-setting wait_for_others", state = st(false, settings.wait_for_others) },
         { title = T("set_countdown", COUNTDOWN_SECONDS), cmd = "script-message watch-together-setting countdown", state = st(false, settings.countdown) },
         { title = T("set_resume"), cmd = "script-message watch-together-setting resume_memory", state = st(false, settings.resume_memory) },
@@ -671,12 +680,14 @@ local function apply(paused, target, speed)
     -- stutters, so only drift over threshold is sought. The paused limit stays above one frame, or a
     -- player with a coarse frame rate would seek again on every tick.
     local fps = mp.get_property_number("container-fps", 25)
-    local limit = paused and math.max(0.1, 1.5 / math.max(fps, 1)) or o.threshold
+    -- Without soft sync every correction is a seek, so it starts earlier, as before 1.4.2.
+    local limit = paused and math.max(0.1, 1.5 / math.max(fps, 1))
+                  or (settings.soft_sync and o.threshold or math.min(o.threshold, 0.3))
     local drift = cur and target - cur or 0
     -- A guest a little off while playing catches up by playing slightly faster or slower, halving the
     -- drift about every tick. The host is the reference and never nudges.
     nudge = 1
-    if role == "join" and not paused and math.abs(drift) > NUDGE_DEAD and math.abs(drift) <= limit then
+    if settings.soft_sync and role == "join" and not paused and math.abs(drift) > NUDGE_DEAD and math.abs(drift) <= limit then
         nudge = 1 + math.max(-NUDGE_MAX, math.min(NUDGE_MAX, drift / 2))
     end
     if math.abs(speed * nudge - mp.get_property_number("speed", 1)) > 1e-3 then
@@ -1452,7 +1463,7 @@ end)
 ------------------------------------------------------------------ settings
 
 local SETTING_LABELS = { wait_for_others = "set_wait", countdown = "set_countdown",
-                         resume_memory = "set_resume", share_files = "set_share" }
+                         resume_memory = "set_resume", share_files = "set_share", soft_sync = "set_soft" }
 
 local function toggle_setting(key)
     if type(settings[key]) ~= "boolean" or not SETTING_LABELS[key] then return end
@@ -1461,6 +1472,7 @@ local function toggle_setting(key)
     local arg = key == "countdown" and COUNTDOWN_SECONDS or o.share_port
     osd(T(settings[key] and "setting_on" or "setting_off", T(SETTING_LABELS[key], arg)))
     if key == "wait_for_others" then update_hold() end
+    if key == "soft_sync" and not settings.soft_sync then end_nudge() end
     if key == "countdown" and not settings.countdown and countdown_end then finish_countdown() end
     if key == "share_files" then
         if settings.share_files then start_share() else stop_share() end

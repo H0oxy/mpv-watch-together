@@ -122,7 +122,7 @@ Last run: 8/8. Screenshots checked: the host sees "Ждём: Аня (буфер�
 
 ### Settings and state files
 
-`settings` (`wait_for_others`, `countdown`, `resume_memory`, `share_files`) start from the conf options, and are then overridden by `~~/watch_together_settings.json`, which the menu toggles write. `state_file()` returns nil when `~~/` does not expand to an absolute path: with `--no-config` it becomes a bare relative name. Then settings and history stay in memory, so test runs never write into the folder mpv was started from.
+`settings` (`soft_sync`, `wait_for_others`, `countdown`, `resume_memory`, `share_files`) start from the conf options, and are then overridden by `~~/watch_together_settings.json`, which the menu toggles write. `state_file()` returns nil when `~~/` does not expand to an absolute path: with `--no-config` it becomes a bare relative name. Then settings and history stay in memory, so test runs never write into the folder mpv was started from.
 
 ### Episode sharing
 
@@ -154,6 +154,7 @@ A guest whose drift while playing is between 0.04 s and `threshold` does not see
 - The nudged speed goes through `expected_speed`, so the observer does not report it. Requests send `speed / nudge`, the room speed.
 - A user speed change during a nudge keeps the user's change: `[`/`]` multiply the nudged speed, so it is divided by `nudge`; Backspace sets exactly 1, which is kept.
 - `end_nudge()` restores the room speed on leave, disconnect, "lost" and any local action, since ticks stop steering for a while then.
+- `settings.soft_sync` (option `soft_sync`, menu Settings, saved like the host settings) turns it off: no nudge, and the playing seek limit is `min(threshold, 0.3)`, the 1.4.1 behavior. Turning it off ends a running nudge.
 
 Test: e2e "small drift caught up by speed, no seek" sends B a fake tick 0.3 s ahead; B must speed up instead of seeking, the spread stays under 0.2 s and settles under 0.1 s at speed 1, and the host and C keep speed 1. A second check presses "]" on B during a nudge: the host must get exactly 1.1. Steady spread with 3 players: 0.04 s.
 

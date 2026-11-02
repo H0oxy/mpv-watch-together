@@ -162,6 +162,16 @@ try {
     Invoke-Mpv $a @('set_property', 'speed', 1) | Out-Null
     [void](Wait-Until { (Near-Speed $b 1) -and (Near-Speed $c 1) } 3)
 
+    # Soft sync off on B: a 0.4 s drift, which a nudge would take, is now a seek; the next tick seeks back.
+    Invoke-Mpv $b @('script-message', 'watch-together-setting', 'soft_sync') | Out-Null
+    Start-Sleep 2  # past B's last local action, so ticks are applied again
+    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', ($tick -replace '"pos":[\d.]+', ('"pos":' + ((Get-Prop $a 'time-pos') + 0.4)))) | Out-Null
+    $jumped = Wait-Until { (Get-Spread $all) -gt 0.3 } 1.5
+    $speedOk = (Get-Prop $b 'speed') -eq 1
+    $settled = Wait-Until { (Get-Spread $all) -lt 0.3 } 4
+    Invoke-Mpv $b @('script-message', 'watch-together-setting', 'soft_sync') | Out-Null
+    Check 'soft sync off: small drift is a seek' ($jumped -and $speedOk -and $settled) ("jumped={0} speed1={1} settled={2}" -f $jumped, $speedOk, $settled)
+
     Invoke-Mpv $b @('playlist-next') | Out-Null
     $ok = Wait-Until { (Get-Prop $a 'filename') -eq $name2 -and (Get-Prop $c 'filename') -eq $name2 } 5
     Check 'guest next episode -> everyone' $ok ("a={0} c={1}" -f (Get-Prop $a 'filename'), (Get-Prop $c 'filename'))

@@ -61,13 +61,13 @@ When the host opens a room in a folder the group watched before, mpv asks "Conti
 
 A guest who is missing an episode the host has can get it under Download from host (Скачать у хоста): one episode or all missing ones. The file goes into the folder of the video you have open, next to your other episodes, and joins the playlist; an interrupted download continues where it stopped. Under Save to (Куда сохранять) in the same submenu you can switch to your Downloads folder instead. The host shares only the files in its mpv playlist, nothing else on its disk. Downloads use a second port (47801), which the host shares in Porthole next to 47800.
 
-Each of these can be turned off under Room settings (when you host) (Настройки комнаты (когда ты хост)), along with waiting for stalled members. The choices are kept between sessions.
+Each of these can be turned off under Settings (Настройки), When you host (Когда ты хост), along with waiting for stalled members. The choices are kept between sessions.
 
 The menu lists the members with their files, and Show members' time on screen (Время участников на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
 
 ## How sync works
 
-The host's player is the reference. A guest's action goes to the host as a request; the host applies it and sends the result to everyone, so two people acting at once still end up in the same place. Once a second the host sends its position, A guest a little off (up to half a second) catches up by playing up to 5% faster or slower for a few seconds: no jump, and the pitch stays the same. Only a bigger gap is fixed with a seek. When seeking during playback, each player aims ahead by its own measured seek time, so it lands level with the others instead of behind.
+The host's player is the reference. A guest's action goes to the host as a request; the host applies it and sends the result to everyone, so two people acting at once still end up in the same place. Once a second the host sends its position. A guest a little off (up to half a second) catches up by playing up to 5% faster or slower for a few seconds: no jump, and the pitch stays the same. Only a bigger gap is fixed with a seek. A guest who prefers the old way turns off Settings → Catch up with the room smoothly (Настройки → Догонять комнату плавно): then any drift over 0.3 seconds is fixed with a seek. When seeking during playback, each player aims ahead by its own measured seek time, so it lands level with the others instead of behind.
 
 In tests on one PC with 21 players (a host and 20 guests), a pause reached everyone within 0.3 seconds and the spread between players stayed under 0.2 seconds. The host's network helper used about 2% of one CPU core.
 
@@ -94,6 +94,7 @@ port=47800          # room port
 bind=127.0.0.1      # address the host listens on (0.0.0.0 for LAN or Tailscale)
 address=127.0.0.1   # where Join friend connects
 threshold=0.5       # drift in seconds before a correcting seek; less is caught up by speed
+soft_sync=yes       # guest: catch up small drift by speed; no = seek over 0.3 s (also in the menu)
 lang=auto           # auto, ru or en
 name=               # your name in the room; empty means the Steam name
 control=all         # host's default control: all or host
