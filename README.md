@@ -90,7 +90,7 @@ max_guests=50       # host refuses connections beyond this
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 
-Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). Set `bind=0.0.0.0` on the host. Each guest copies the host's address, for example `100.64.0.5:47800`, and chooses Join address from clipboard (Подключиться к адресу из буфера обмена).
+Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). Set `bind=0.0.0.0` on the host. The host chooses Copy invite address (Скопировать адрес приглашения) and sends the copied text, for example `100.64.0.5:47800`, to the guests. Each guest copies it and chooses Join address from clipboard (Подключиться к адресу из буфера обмена). The script picks a Tailscale address first, then a home network one. With Porthole the copied address is `127.0.0.1:<port>`, which is what Join friend uses anyway.
 
 ## How it works
 

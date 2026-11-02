@@ -1,7 +1,21 @@
-# Prints one JSON line for main.lua: the Windows display language and the Steam name of the account
-# that signed in last (from Steam's loginusers.vdf), so the room shows Steam names. ASCII only.
+# Prints one JSON line for main.lua. ASCII only.
+# Default: the Windows display language and the Steam name of the account that signed in last
+# (from Steam's loginusers.vdf), so the room shows Steam names.
+# -Addresses: this PC's IPv4 addresses on active interfaces, for the host's invite.
+param([switch]$Addresses)
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+
+if ($Addresses) {
+    $ips = @(foreach ($nic in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        if ($nic.OperationalStatus -ne 'Up' -or $nic.NetworkInterfaceType -eq 'Loopback') { continue }
+        foreach ($a in $nic.GetIPProperties().UnicastAddresses) {
+            if ($a.Address.AddressFamily -eq 'InterNetwork') { $a.Address.ToString() }
+        }
+    })
+    ConvertTo-Json -Compress @{ ips = $ips }
+    exit
+}
 
 $steam = ''
 $root = (Get-ItemProperty 'HKCU:\Software\Valve\Steam').SteamPath

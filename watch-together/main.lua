@@ -9,7 +9,7 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local PROTOCOL = 2
 
 local o = {
@@ -44,6 +44,9 @@ local STRINGS = {
         control = "Управление",
         control_all = "Все участники",
         control_host = "Только я",
+        copy_invite = "Скопировать адрес приглашения",
+        invite_copied = "Скопировано: %s\nДрузья выбирают «Подключиться к адресу из буфера обмена»",
+        no_address = "Не удалось узнать адрес этого компьютера",
         control_is = "Управление: %s",
         control_all_short = "все",
         control_host_short = "только хост",
@@ -102,6 +105,9 @@ local STRINGS = {
         control = "Control",
         control_all = "Everyone",
         control_host = "Only me",
+        copy_invite = "Copy invite address",
+        invite_copied = "Copied: %s\nFriends choose Join address from clipboard",
+        no_address = "Could not find this PC's address",
         control_is = "Control: %s",
         control_all_short = "everyone",
         control_host_short = "host only",
@@ -293,6 +299,7 @@ local function menu_item()
             { title = T("control_all"), cmd = "script-message watch-together-control all", state = st(false, control == "all") },
             { title = T("control_host"), cmd = "script-message watch-together-control host", state = st(false, control == "host") },
         } }
+        items[#items + 1] = { title = T("copy_invite"), cmd = "script-message watch-together-invite" }
     elseif role == "join" and r then
         items[#items + 1] = { title = T("control_is", T(r.control == "host" and "control_host_short" or "control_all_short")), state = { "disabled" } }
     end
@@ -749,6 +756,41 @@ local function set_control(value)
     refresh_menu()
 end
 
+-- Which of this PC's addresses friends most likely can reach. Lower is better.
+local function ip_rank(ip)
+    local a, b = ip:match("^(%d+)%.(%d+)%.")
+    a, b = tonumber(a), tonumber(b)
+    if not a then return 9 end
+    if a == 100 and b >= 64 and b <= 127 then return 1 end  -- Tailscale
+    if a == 192 and b == 168 then return 2 end
+    if a == 10 then return 3 end
+    if a == 169 and b == 254 then return 8 end              -- no DHCP answer
+    if a == 172 and b >= 16 and b <= 31 then return 6 end   -- often Hyper-V/WSL virtual adapters
+    return 4                                                -- public address
+end
+
+-- "address:port" for "Join address from clipboard". With Porthole (bind 127.0.0.1) that is
+-- the local address the guests' Porthole opens; with bind=0.0.0.0 it is this PC's best address.
+local function copy_invite()
+    if role ~= "host" then return end
+    local function copy(addr)
+        local text = addr .. ":" .. o.port
+        mp.set_property("clipboard/text", text)
+        osd(T("invite_copied", text))
+    end
+    if o.bind ~= "0.0.0.0" then copy(o.bind) return end
+    mp.command_native_async({ name = "subprocess", playback_only = false, capture_stdout = true,
+        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                 "-File", utils.join_path(mp.get_script_directory(), "sysinfo.ps1"), "-Addresses" },
+    }, function(ok, res)
+        local info = ok and res.status == 0 and utils.parse_json(res.stdout or "")
+        local ips = type(info) == "table" and info.ips or {}
+        if type(ips) == "string" then ips = { ips } end
+        table.sort(ips, function(x, y) return ip_rank(x) < ip_rank(y) end)
+        if ips[1] then copy(ips[1]) else osd(T("no_address")) end
+    end)
+end
+
 local function toggle_panel()
     show_panel = not show_panel
     update_panel()
@@ -816,6 +858,7 @@ mp.register_script_message("watch-together-join-clipboard", join_clipboard)
 mp.register_script_message("watch-together-leave", leave)
 mp.register_script_message("watch-together-control", set_control)
 mp.register_script_message("watch-together-panel", toggle_panel)
+mp.register_script_message("watch-together-invite", copy_invite)
 mp.register_script_message("watch-together-update", function() check_update(true) end)
 mp.register_script_message("watch-together-install", function()
     if update_available then install_update(update_available) end

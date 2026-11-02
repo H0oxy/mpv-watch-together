@@ -188,6 +188,16 @@ try {
     $ok = (Get-Prop $a 'time-pos') -gt $before + 2.5 -and -not (Get-Prop $b 'pause') -and (All-Same $all 'filename') -and (Get-Spread $all) -lt 0.3
     Check 'stable: no ping-pong' $ok ''
 
+    # The clipboard is shared with the user, so put back whatever was there.
+    $savedClip = Get-Clipboard -Raw
+    try {
+        Invoke-Mpv $a @('script-message', 'watch-together-invite') | Out-Null
+        $ok = Wait-Until { (Get-Clipboard -Raw) -eq "127.0.0.1:$Port" } 3
+        Check 'host copies invite address' $ok ("clipboard={0}" -f (Get-Clipboard -Raw))
+    } finally {
+        if ($savedClip) { Set-Clipboard -Value $savedClip }
+    }
+
     Invoke-Mpv $b @('script-message', 'watch-together-leave') | Out-Null
     Invoke-Mpv $c @('script-message', 'watch-together-leave') | Out-Null
     $ok = Wait-Until { (Status $a) -eq 'listening' } 5

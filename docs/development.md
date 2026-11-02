@@ -5,7 +5,7 @@
 ```
 watch-together/main.lua     menu, sync logic, OSD, updater UI (runs inside mpv)
 watch-together/bridge.ps1   TCP <-> mpv IPC relay; host: many guests, join: one link
-watch-together/sysinfo.ps1  startup: Windows display language + Steam persona name, as JSON
+watch-together/sysinfo.ps1  startup: Windows display language + Steam persona name; -Addresses: IPv4 list
 watch-together/update.ps1   GitHub release check / install
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
@@ -14,7 +14,7 @@ install.bat, uninstall.bat
 
 ## Processes and messages
 
-1. A menu click sends `script-message watch-together-<action>` (`host`, `join`, `join-clipboard`, `leave`, `control <all|host>`, `panel`, `update`, `install`).
+1. A menu click sends `script-message watch-together-<action>` (`host`, `join`, `join-clipboard`, `leave`, `control <all|host>`, `invite`, `panel`, `update`, `install`).
 2. `main.lua` makes sure `input-ipc-server` is set (`mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with an async `subprocess` (`playback_only=false`). Aborting that command kills the bridge.
 3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`.
 4. Lua to bridge: broadcast `script-message watch-together-out <target> <json>`, where target is a peer id or `*` (all peers). The bridge sees it as an IPC `client-message`.
@@ -73,6 +73,17 @@ While a seek decodes, the picture stands still and the room keeps playing. `seek
 
 `sysinfo.ps1` runs once at startup (async) when `lang=auto` or `name` is empty. It prints `{"lang": CurrentUICulture.Name, "steam": PersonaName}`. The Steam name comes from `<SteamPath>\config\loginusers.vdf` (the account with `MostRecent "1"`, else the first). `SteamPath` is read from `HKCU\Software\Valve\Steam`. Any `ru*` language gives Russian. Until the answer arrives (under a second), the menu is in English and the name is `%USERNAME%`. User-facing text lives in `STRINGS` (`ru`, `en`) and goes through `T(key, ...)`.
 
+Invite address (host only): with `bind` other than `0.0.0.0`, the clipboard gets `<bind>:<port>`. With `0.0.0.0`, `sysinfo.ps1 -Addresses` lists IPv4 addresses of active non-loopback interfaces, and `ip_rank` picks one in this order:
+
+1. Tailscale `100.64/10`
+2. `192.168/16`
+3. `10/8`
+4. public addresses
+5. `172.16/12` (often Hyper-V/WSL virtual adapters)
+6. link-local `169.254/16`
+
+The text is written to `clipboard/text`. e2e checks the `127.0.0.1` case and restores the user's clipboard. The `0.0.0.0` path is checked piecewise (address listing on a real PC, ranking on sample sets), not end to end, because hosting on all interfaces would open a firewall prompt.
+
 The menu entry is found by its `watch-together-leave` command, not by its title. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines).
 
 ## Updates
@@ -114,7 +125,7 @@ Spread is measured with every playing position moved back to the time of the fir
 
 Last results (mpv 0.41.0-dev, one PC):
 
-- e2e: 25/25.
+- e2e: 26/26.
 - scale with 5 guests: 6/6 runs.
 - scale with 20 guests: connect + sync 1.4 s, pause to all 0.28 s, guest seek to all 0.36 s, spread under 0.2 s, host bridge about 2.5% of a core.
 
