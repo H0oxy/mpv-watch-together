@@ -59,7 +59,7 @@ When an episode ends by itself, the next one opens paused for everyone with "Nex
 
 When the host opens a room in a folder the group watched before, mpv asks "Continue from S01E05, 12:34?" ("Продолжить с …?"). The episode and time are remembered every 10 seconds while you are in a room.
 
-A guest who is missing an episode the host has can get it under Download from host (Скачать у хоста): one episode or all missing ones. The file goes next to the guest's other episodes and joins the playlist; an interrupted download continues where it stopped. The host shares only the files in its mpv playlist, nothing else on its disk. Downloads use a second port (47801), which the host shares in Porthole next to 47800.
+A guest who is missing an episode the host has can get it under Download from host (Скачать у хоста): one episode or all missing ones. The file goes into the folder of the video you have open, next to your other episodes, and joins the playlist; an interrupted download continues where it stopped. Under Save to (Куда сохранять) in the same submenu you can switch to your Downloads folder instead. The host shares only the files in its mpv playlist, nothing else on its disk. Downloads use a second port (47801), which the host shares in Porthole next to 47800.
 
 Each of these can be turned off under Room settings (when you host) (Настройки комнаты (когда ты хост)), along with waiting for stalled members. The choices are kept between sessions.
 
@@ -104,7 +104,7 @@ countdown=10        # seconds of "next episode in" countdown
 resume_memory=yes   # remember episode and time, offer them when hosting again
 share_files=yes     # let guests download episodes from the host
 share_port=47801    # port for those downloads
-download_dir=       # where guests save downloads; empty = next to the current file
+download_dir=       # a fixed folder for downloads; empty = the menu choice (open video's folder or Downloads)
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 

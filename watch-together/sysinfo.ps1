@@ -1,6 +1,6 @@
 # Prints one JSON line for main.lua. ASCII only.
-# Default: the Windows display language and the Steam name of the account that signed in last
-# (from Steam's loginusers.vdf), so the room shows Steam names.
+# Default: the Windows display language, the Steam name of the account that signed in last
+# (from Steam's loginusers.vdf, so the room shows Steam names) and the Downloads folder.
 # -Addresses: this PC's IPv4 addresses on active interfaces, for the host's invite.
 param([switch]$Addresses)
 $ErrorActionPreference = 'SilentlyContinue'
@@ -32,4 +32,8 @@ if ($root) {
     }
 }
 
-ConvertTo-Json -Compress @{ lang = [Globalization.CultureInfo]::CurrentUICulture.Name; steam = ($steam -replace '\\(.)', '$1') }
+# The real Downloads folder: users can move it away from %USERPROFILE%\Downloads.
+$downloads = ''
+try { $downloads = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch { }
+
+ConvertTo-Json -Compress @{ lang = [Globalization.CultureInfo]::CurrentUICulture.Name; steam = ($steam -replace '\\(.)', '$1'); downloads = $downloads }

@@ -138,8 +138,8 @@ Protocol, one connection per file:
 The guest menu lists host names that are neither in the guest's playlist nor in `download_dir()`:
 
 - `download_dir` option if set;
-- else the current file's folder;
-- else `%USERPROFILE%\Downloads`.
+- else, with `settings.download_to = "video"` (default, menu "Save to"), the current local file's folder;
+- else the Downloads folder: the real one from `sysinfo.ps1` (`shell:Downloads`, it can be moved), `%USERPROFILE%\Downloads` until that answer arrives.
 
 Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
 
@@ -212,7 +212,7 @@ Spread is measured with every playing position moved back to the time of the fir
 Last results (mpv 0.41.0-dev, one PC):
 
 - e2e: 26/26.
-- features: 14/14.
+- features: 15/15.
 - buffering: 8/8.
 - scale with 5 guests: 6/6 runs.
 - scale with 20 guests: connect + sync 1.4 s, pause to all 0.28 s, guest seek to all 0.36 s, spread under 0.2 s, host bridge about 2.5% of a core.

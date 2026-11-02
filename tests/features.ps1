@@ -66,6 +66,14 @@ try {
     Start-Sleep -Milliseconds 300
     $on = Get-Content -Raw (Join-Path $cfgA 'watch_together_settings.json') | ConvertFrom-Json
     Check 'settings saved on toggle' ((-not $off.countdown) -and $on.countdown) ("off={0} on={1}" -f $off.countdown, $on.countdown)
+    # Download folder choice: saved, and back to the default (no download goes to the real Downloads here).
+    $null = I $b @('script-message', 'watch-together-download-to', 'downloads')
+    Start-Sleep -Milliseconds 300
+    $dl = (Get-Content -Raw (Join-Path $cfgB 'watch_together_settings.json') | ConvertFrom-Json).download_to
+    $null = I $b @('script-message', 'watch-together-download-to', 'video')
+    Start-Sleep -Milliseconds 300
+    $back = (Get-Content -Raw (Join-Path $cfgB 'watch_together_settings.json') | ConvertFrom-Json).download_to
+    Check 'download folder choice saved' ($dl -eq 'downloads' -and $back -eq 'video') ("{0} -> {1}" -f $dl, $back)
 
     $null = I $a @('script-message', 'watch-together-host'); Start-Sleep -Milliseconds 800
     $null = I $b @('script-message', 'watch-together-join')

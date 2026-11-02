@@ -47,6 +47,7 @@ local settings = {
     countdown = o.countdown > 0,
     resume_memory = o.resume_memory,
     share_files = o.share_files,
+    download_to = "video",  -- guest: "video" (the open video's folder) | "downloads"
 }
 do
     local f = SETTINGS_FILE and io.open(SETTINGS_FILE, "r")
@@ -56,6 +57,7 @@ do
         for k, v in pairs(type(saved) == "table" and saved or {}) do
             if type(settings[k]) == type(v) then settings[k] = v end
         end
+        if settings.download_to ~= "downloads" then settings.download_to = "video" end
     end
 end
 
@@ -153,6 +155,10 @@ local STRINGS = {
         dl_hint = "Проверь, что хост добавил порт %d в лобби Porthole",
         share_sending = "%s скачивает %s",
         mb = "%.0f МБ",
+        save_to = "Куда сохранять",
+        save_video = "В папку открытого видео",
+        save_downloads = "В «Загрузки»",
+        save_to_set = "Серии будут сохраняться: %s",
         more = "…и ещё %d",
     },
     en = {
@@ -243,6 +249,10 @@ local STRINGS = {
         dl_hint = "Check that the host shared port %d in the Porthole lobby",
         share_sending = "%s is downloading %s",
         mb = "%.0f MB",
+        save_to = "Save to",
+        save_video = "The open video's folder",
+        save_downloads = "Downloads",
+        save_to_set = "Episodes will be saved to: %s",
         more = "…and %d more",
     },
 }
@@ -418,13 +428,19 @@ local function current_path()
     return utils.join_path(mp.get_property("working-directory") or "", path)
 end
 
--- Downloads go next to the episodes we already have, so they land in the same playlist folder.
+-- Windows' real Downloads folder once sysinfo.ps1 has told us; it can be moved off the profile.
+local downloads_folder = utils.join_path(os.getenv("USERPROFILE") or "", "Downloads")
+
+-- A download_dir in the conf wins; else the menu choice: next to the open video (so the episodes
+-- stay together, Downloads when a stream is open) or always Downloads.
 local function download_dir()
     if o.download_dir ~= "" then return mp.command_native({ "expand-path", o.download_dir }) end
-    local full = current_path()
-    local dir = full and utils.split_path(full)
-    if dir and dir ~= "" then return dir end
-    return utils.join_path(os.getenv("USERPROFILE") or "", "Downloads")
+    if settings.download_to == "video" then
+        local full = current_path()
+        local dir = full and utils.split_path(full)
+        if dir and dir ~= "" then return dir end
+    end
+    return downloads_folder
 end
 
 -- Names from the host become file names here, so nothing that could leave the folder is accepted.
@@ -499,6 +515,11 @@ local function menu_item()
                 end
             end
         end
+        sub[#sub + 1] = { type = "separator" }
+        sub[#sub + 1] = { type = "submenu", title = T("save_to"), submenu = {
+            { title = T("save_video"), cmd = "script-message watch-together-download-to video", state = st(false, settings.download_to == "video") },
+            { title = T("save_downloads"), cmd = "script-message watch-together-download-to downloads", state = st(false, settings.download_to == "downloads") },
+        } }
         items[#items + 1] = { type = "submenu", title = T("download_menu"), submenu = sub }
     end
     items[#items + 1] = { type = "submenu", title = T("settings"), submenu = {
@@ -558,8 +579,8 @@ end
 if o.lang ~= "auto" then set_lang(o.lang) end
 mp.set_property("user-data/watch-together/name", my_name)
 
--- mpv knows neither the OS language nor the Steam name, so ask Windows once at startup.
-if mp.get_property_native("platform") == "windows" and (o.lang == "auto" or o.name == "") then
+-- mpv knows neither the OS language, the Steam name nor the Downloads folder, so ask Windows once.
+if mp.get_property_native("platform") == "windows" then
     mp.command_native_async({ name = "subprocess", playback_only = false, capture_stdout = true,
         args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
                  "-File", utils.join_path(mp.get_script_directory(), "sysinfo.ps1") },
@@ -571,6 +592,7 @@ if mp.get_property_native("platform") == "windows" and (o.lang == "auto" or o.na
             mp.set_property("user-data/watch-together/name", my_name)
         end
         if o.lang == "auto" then set_lang(info.lang) end
+        if type(info.downloads) == "string" and info.downloads ~= "" then downloads_folder = info.downloads end
     end)
 end
 
@@ -1409,6 +1431,13 @@ local function toggle_setting(key)
 end
 
 mp.register_script_message("watch-together-setting", toggle_setting)
+mp.register_script_message("watch-together-download-to", function(where)
+    if where ~= "video" and where ~= "downloads" then return end
+    settings.download_to = where
+    save_settings()
+    osd(T("save_to_set", download_dir()))
+    refresh_menu()
+end)
 
 ------------------------------------------------------------------ auto-update
 
