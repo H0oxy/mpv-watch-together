@@ -6,9 +6,10 @@ A host and any number of guests, each with its own copy of the same video: mpv s
 - `watch-together/bridge.ps1`: PowerShell relay between mpv JSON IPC and TCP peers (host: many guests).
 - `watch-together/sysinfo.ps1`: Windows language and Steam name at startup.
 - `watch-together/update.ps1`: checks and installs GitHub releases.
+- `watch-together/share.ps1` / `fetch.ps1`: episode download, host side / guest side.
 - `install.bat` / `uninstall.bat`: copy the plugin to, or remove it from, `%APPDATA%\mpv\scripts\watch-together`.
 
-Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1` (need `ffmpeg` on PATH the first time; buffering also needs `python`).
+Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1`, `tests\features.ps1` (need `ffmpeg` on PATH the first time; buffering also needs `python`).
 
 Release: bump `VERSION` in `main.lua`, commit, push, create GitHub release `v<VERSION>`. Users get asked to update at the next mpv start.
 

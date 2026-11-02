@@ -9,7 +9,7 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.3.0"
+local VERSION = "1.4.0"
 local PROTOCOL = 2
 
 local o = {
@@ -24,8 +24,45 @@ local o = {
     max_guests = 50,        -- host: connections beyond this are refused
     wait_for_others = true, -- host: pause the room while someone is buffering or loading a file
     wait_timeout = 30,      -- host: seconds to wait for one member before playing on without them
+    countdown = 10,         -- host: seconds of "next episode in ..." after an episode ends; 0 = off
+    resume_memory = true,   -- remember episode and time per folder, offer them when hosting again
+    share_files = true,     -- host: let guests download episodes from the host's playlist
+    share_port = 47801,     -- host: port for those downloads (share it in Porthole next to port)
+    download_dir = "",      -- guest: where downloads go; empty = next to the current file, else Downloads
 }
 options.read_options(o, "watch_together")
+
+-- A file in mpv's config folder, or nil when mpv runs without one (--no-config): then "~~/" expands to
+-- a bare relative name, and writing it would litter whatever folder mpv was started from.
+local function state_file(name)
+    local path = mp.command_native({ "expand-path", "~~/" .. name })
+    if type(path) == "string" and (path:match("^%a:[\\/]") or path:match("^[\\/]")) then return path end
+    return nil
+end
+
+-- Toggles from the Settings menu override the conf file and survive restarts.
+local SETTINGS_FILE = state_file("watch_together_settings.json")
+local settings = {
+    wait_for_others = o.wait_for_others,
+    countdown = o.countdown > 0,
+    resume_memory = o.resume_memory,
+    share_files = o.share_files,
+}
+do
+    local f = SETTINGS_FILE and io.open(SETTINGS_FILE, "r")
+    if f then
+        local saved = utils.parse_json(f:read("*a") or "")
+        f:close()
+        for k, v in pairs(type(saved) == "table" and saved or {}) do
+            if type(settings[k]) == type(v) then settings[k] = v end
+        end
+    end
+end
+
+local function save_settings()
+    local f = SETTINGS_FILE and io.open(SETTINGS_FILE, "w")
+    if f then f:write(utils.format_json(settings)) f:close() end
+end
 
 local STRINGS = {
     ru = {
@@ -93,6 +130,29 @@ local STRINGS = {
         you_word = "тебя",
         all_ready = "Все готовы, продолжаем",
         gave_up = "Не дождались: %s, продолжаем",
+        settings = "Настройки комнаты (когда ты хост)",
+        set_wait = "Ждать тех, у кого буферизация или загрузка файла",
+        set_countdown = "Отсчёт %d с перед следующей серией",
+        set_resume = "Предлагать продолжить с места остановки",
+        set_share = "Разрешить гостям скачивать у меня серии (порт %d)",
+        setting_on = "Включено: %s",
+        setting_off = "Выключено: %s",
+        countdown = "Следующая серия через %d с\nПробел: подождать",
+        countdown_wait = "Отсчёт остановлен (%s). Пробел: начать серию",
+        you_self = "ты",
+        go = "Поехали!",
+        resume_prompt = "Продолжить с %s, %s?",
+        download_menu = "Скачать у хоста",
+        download_all = "Все недостающие (%d)",
+        download_none = "Все серии хоста у тебя уже есть",
+        downloading = "Скачивается: %s",
+        download_cancel = "Отменить загрузку",
+        dl_progress = "Загрузка %s: %d%% (%s из %s)",
+        dl_done = "Скачано: %s",
+        dl_failed = "Не удалось скачать %s: %s",
+        dl_hint = "Проверь, что хост добавил порт %d в лобби Porthole",
+        share_sending = "%s скачивает %s",
+        mb = "%.0f МБ",
         more = "…и ещё %d",
     },
     en = {
@@ -160,6 +220,29 @@ local STRINGS = {
         you_word = "you",
         all_ready = "Everyone is ready, playing on",
         gave_up = "Gave up waiting for %s, playing on",
+        settings = "Room settings (when you host)",
+        set_wait = "Wait for anyone buffering or loading a file",
+        set_countdown = "%d s countdown before the next episode",
+        set_resume = "Offer to continue where we stopped",
+        set_share = "Let guests download episodes from me (port %d)",
+        setting_on = "On: %s",
+        setting_off = "Off: %s",
+        countdown = "Next episode in %d s\nSpace: wait",
+        countdown_wait = "Countdown stopped (%s). Space: start the episode",
+        you_self = "you",
+        go = "Here we go!",
+        resume_prompt = "Continue from %s, %s?",
+        download_menu = "Download from host",
+        download_all = "All missing (%d)",
+        download_none = "You already have all the host's episodes",
+        downloading = "Downloading: %s",
+        download_cancel = "Cancel download",
+        dl_progress = "Downloading %s: %d%% (%s of %s)",
+        dl_done = "Downloaded: %s",
+        dl_failed = "Could not download %s: %s",
+        dl_hint = "Check that the host shared port %d in the Porthole lobby",
+        share_sending = "%s is downloading %s",
+        mb = "%.0f MB",
         more = "…and %d more",
     },
 }
@@ -205,6 +288,25 @@ local room                  -- last room info from the host: {control, members}
 local pending               -- {count, at}: our requests the host hasn't answered yet
 
 local update_available      -- release tag newer than VERSION, once checked
+
+-- next-episode countdown
+local countdown_end         -- host: mp.get_time() when the next episode starts on its own
+local countdown_pending = false  -- host: start the countdown once the new episode has really started
+local eof_advance = false   -- the last file ended by itself, so the next one started on its own
+local keep_file_until = 0   -- guest: after our own end-of-episode advance, don't follow the host back
+
+-- resume memory
+local HISTORY_FILE = state_file("watch_together_history.json")
+local history_mem = {}      -- used instead of the file when mpv has no config folder
+local pending_resume        -- seek here once the remembered episode has loaded
+
+-- episode downloads
+local host_files            -- guest: {names, port} the host offers
+local joined_address        -- guest: address the room was joined at; downloads go there too
+local dl_queue = {}         -- guest: names waiting to download
+local dl_current            -- guest: {name, handle} of the running fetch.ps1
+local share_helper          -- host: async handle of share.ps1
+local remember, start_share, stop_share, send_files, cancel_downloads, offer_resume  -- defined further down
 
 local show_panel = false
 local PANEL_LINES = 20
@@ -307,6 +409,42 @@ local function update_panel()
     panel:update()
 end
 
+local function is_url(path) return path:find("^%a[%w+.-]*://") ~= nil end
+
+-- Full path of the current file, or nil for streams.
+local function current_path()
+    local path = mp.get_property("path")
+    if not path or is_url(path) then return nil end
+    return utils.join_path(mp.get_property("working-directory") or "", path)
+end
+
+-- Downloads go next to the episodes we already have, so they land in the same playlist folder.
+local function download_dir()
+    if o.download_dir ~= "" then return mp.command_native({ "expand-path", o.download_dir }) end
+    local full = current_path()
+    local dir = full and utils.split_path(full)
+    if dir and dir ~= "" then return dir end
+    return utils.join_path(os.getenv("USERPROFILE") or "", "Downloads")
+end
+
+-- Names from the host become file names here, so nothing that could leave the folder is accepted.
+local function safe_name(name)
+    return type(name) == "string" and #name <= 255 and name ~= "." and name ~= ".."
+       and name:match('^[^\\/:*?"<>|%c]+$') ~= nil
+end
+
+-- Host episodes this guest has neither in the playlist nor in the download folder.
+local function missing_files()
+    if not host_files then return {} end
+    local have = {}
+    for _, e in ipairs(mp.get_property_native("playlist") or {}) do have[basename(e.filename)] = true end
+    local dir, list = download_dir(), {}
+    for _, name in ipairs(host_files.names) do
+        if not have[name] and not utils.file_info(utils.join_path(dir, name)) then list[#list + 1] = name end
+    end
+    return list
+end
+
 ------------------------------------------------------------------ menu
 
 -- Positions are left out on purpose: rewriting menu-data rebuilds the native menu, even while it is open.
@@ -339,6 +477,36 @@ local function menu_item()
     elseif role == "join" and r then
         items[#items + 1] = { title = T("control_is", T(r.control == "host" and "control_host_short" or "control_all_short")), state = { "disabled" } }
     end
+    if role == "join" and host_files and #host_files.names > 0 then
+        local sub = {}
+        if dl_current then
+            sub[#sub + 1] = { title = T("downloading", menu_name(dl_current.name)), state = { "disabled" } }
+            sub[#sub + 1] = { title = T("download_cancel"), cmd = "script-message watch-together-dl-cancel" }
+            sub[#sub + 1] = { type = "separator" }
+        end
+        local missing = missing_files()
+        if #missing == 0 then
+            sub[#sub + 1] = { title = T("download_none"), state = { "disabled" } }
+        else
+            sub[#sub + 1] = { title = T("download_all", #missing), cmd = "script-message watch-together-dl-all" }
+            sub[#sub + 1] = { type = "separator" }
+            -- By position in the host's list: file names can hold characters that break command parsing.
+            for i, name in ipairs(host_files.names) do
+                for _, m in ipairs(missing) do
+                    if m == name and #sub < 40 then
+                        sub[#sub + 1] = { title = menu_name(name), cmd = "script-message watch-together-dl " .. i }
+                    end
+                end
+            end
+        end
+        items[#items + 1] = { type = "submenu", title = T("download_menu"), submenu = sub }
+    end
+    items[#items + 1] = { type = "submenu", title = T("settings"), submenu = {
+        { title = T("set_wait"), cmd = "script-message watch-together-setting wait_for_others", state = st(false, settings.wait_for_others) },
+        { title = T("set_countdown", o.countdown > 0 and o.countdown or 10), cmd = "script-message watch-together-setting countdown", state = st(false, settings.countdown) },
+        { title = T("set_resume"), cmd = "script-message watch-together-setting resume_memory", state = st(false, settings.resume_memory) },
+        { title = T("set_share", o.share_port), cmd = "script-message watch-together-setting share_files", state = st(false, settings.share_files) },
+    } }
     for _, item in ipairs({
         { type = "separator" },
         { title = T("host", o.port), cmd = "script-message watch-together-host", state = st(active) },
@@ -448,6 +616,8 @@ end
 -- Same file name in my playlist first; different releases fall back to the same playlist position.
 local function follow_file(m)
     if type(m.file) ~= "string" or m.file == mp.get_property("filename") then return false end
+    -- We just moved on to the next episode by ourselves; the host gets there a moment later.
+    if role == "join" and mp.get_time() < keep_file_until then return false end
     local playlist = mp.get_property_native("playlist") or {}
     local index
     for i, entry in ipairs(playlist) do
@@ -511,7 +681,8 @@ local function host_state_msg(ev, by, pos, paused, speed)
              speed = speed or mp.get_property_number("speed", 1),
              dur = mp.get_property_number("duration"), file = mp.get_property("filename"),
              pl = mp.get_property_number("playlist-pos"),
-             wait = holding and wait_list or nil }
+             wait = holding and wait_list or nil,
+             countdown = countdown_end and math.max(0, math.ceil(countdown_end - mp.get_time())) or nil }
 end
 
 -- A discrete change: new epoch, sent to everyone.
@@ -559,7 +730,7 @@ end
 -- Pause the room while someone waits; resume, as the users last wanted, once nobody does.
 local function update_hold()
     if role ~= "host" then return end
-    local list = (o.wait_for_others and status == "hosting") and waiting_list() or {}
+    local list = (settings.wait_for_others and status == "hosting") and waiting_list() or {}
     wait_list = list
     if #list > 0 and not holding then
         holding = true
@@ -579,6 +750,40 @@ local function update_hold()
         broadcast("resume", nil, nil, want_paused)
         osd(T("all_ready"))
     end
+end
+
+-- Next episode: everyone starts paused at its beginning and plays together when the count ends.
+local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10
+
+local function start_countdown()
+    countdown_end = mp.get_time() + COUNTDOWN_SECONDS
+    want_paused = false
+    if not mp.get_property_native("pause") then
+        expected_pause = true
+        mp.set_property_native("pause", true)
+    end
+    osd(T("countdown", COUNTDOWN_SECONDS))
+end
+
+-- Someone pressed play during the count: that means "wait". The next play starts the episode.
+local function stop_countdown(who)
+    countdown_end = nil
+    want_paused = true
+    epoch = epoch + 1
+    local m = host_state_msg("wait_req", nil, nil, true)
+    m.who = who  -- not "by": the guest who asked must apply this too, its own play is undone
+    if m.pos then send("*", m) end
+    osd(T("countdown_wait", who))
+end
+
+local function finish_countdown()
+    countdown_end = nil
+    want_paused = false
+    if holding then return end  -- the hold ends with resume, as wanted
+    expected_pause = false
+    mp.set_property_native("pause", false)
+    broadcast("go", nil, nil, false)
+    osd(T("go"))
 end
 
 local function on_guest_message(id, m)
@@ -605,6 +810,7 @@ local function on_guest_message(id, m)
         local s = host_state_msg("sync")
         s.you = name  -- the guest learns its name in the room (it may have been made unique)
         if s.pos then send(id, s) else send(id, { t = "welcome", you = name }) end
+        send_files(id)
         set_status("hosting")
     elseif m.t == "ping" then
         send(id, { t = "pong", id = m.id })
@@ -624,6 +830,10 @@ local function on_guest_message(id, m)
             return
         end
         if m.ev == "pause" then
+            if countdown_end and not m.paused then
+                stop_countdown(g.name)
+                return
+            end
             want_paused = m.paused
             if holding and not m.paused then
                 send(id, host_state_msg("hold"))  -- back to paused, with whom we are waiting for
@@ -671,6 +881,14 @@ local function on_host_message(m)
     if m.t == "pong" and type(m.id) == "number" then
         local sample = mp.get_time() - m.id
         if sample >= 0 and sample < 10 then rtt = rtt * 0.7 + sample * 0.3 end
+    elseif m.t == "files" and type(m.names) == "table" then
+        local names = {}
+        for _, n in ipairs(m.names) do
+            if safe_name(n) and #names < 500 then names[#names + 1] = n end
+        end
+        local port = tonumber(m.port)
+        host_files = (port and port >= 1 and port <= 65535) and { names = names, port = port } or nil
+        refresh_menu()
     elseif m.t == "notice" and type(m.name) == "string" then
         if m.key == "joined" then osd(T("joined", m.name))
         elseif m.key == "left" then osd(T("member_left", m.name))
@@ -705,12 +923,17 @@ local function on_host_message(m)
             if not switching and same_file(m.dur) then apply(m.paused, host_now(m), m.speed) end
             if m.ev == "hold" then osd(T("waiting", wait_text(m.wait)))
             elseif m.ev == "resume" then osd(T("all_ready"))
+            elseif m.ev == "go" then osd(T("go"))
+            elseif m.ev == "wait_req" and type(m.who) == "string" then
+                osd(T("countdown_wait", is_me(m.who) and T("you_self") or short(m.who, 24)))
             elseif m.ev == "sync" then osd(T("synced"))
+            elseif type(m.countdown) == "number" then osd(T("countdown", m.countdown))
             else notify(m.ev, m.by, m) end
             return
         end
-        -- Keep "waiting for ..." on screen for as long as the room waits.
-        if m.wait and wait_text(m.wait) ~= "" then osd(T("waiting", wait_text(m.wait))) end
+        -- Keep "waiting for ..." and the countdown on screen while they last.
+        if m.wait and wait_text(m.wait) ~= "" then osd(T("waiting", wait_text(m.wait)))
+        elseif type(m.countdown) == "number" and m.countdown > 0 then osd(T("countdown", m.countdown)) end
         -- Wait a moment so that mpv's queued seek/restart events of a user action are handled before
         -- the drift is judged, then skip the tick if we are seeking or waiting for the host's answer.
         mp.add_timeout(0.25, function()
@@ -740,6 +963,12 @@ local function local_action(ev)
     last_local_action = mp.get_time()
     mp.msg.debug("local action " .. ev .. " at " .. tostring(mp.get_property_number("time-pos")))
     if role == "host" then
+        if ev == "pause" and countdown_end and not mp.get_property_native("pause") then
+            expected_pause = true
+            mp.set_property_native("pause", true)
+            stop_countdown(my_name)
+            return
+        end
         if ev == "pause" then
             want_paused = mp.get_property_native("pause")
             if holding and not want_paused then  -- play pressed while the room waits: remembered, not done
@@ -805,8 +1034,11 @@ local function stop()
         helper = nil
         mp.abort_async_command(h)
     end
+    remember()
+    stop_share()
+    cancel_downloads()
     role, members, room, host_state, pending, switch_by, room_name = nil, {}, nil, nil, nil, nil, nil
-    holding, wait_list = false, {}
+    holding, wait_list, countdown_end, countdown_pending, host_files = false, {}, nil, false, nil
     set_status("off")
 end
 
@@ -843,6 +1075,7 @@ local function start(mode, address, port)
         mp.msg.error("bridge.ps1 exited: " .. utils.format_json(res))
     end)
     helper = h
+    joined_address = mode == "join" and address or nil
     want_paused = mp.get_property_native("pause") == true
     set_status(mode == "host" and "listening" or "connecting")
     return true
@@ -890,7 +1123,10 @@ end)
 ------------------------------------------------------------------ menu actions
 
 local function host()
-    if start("host", o.bind, o.port) then osd(T("hosted", o.port)) end
+    if not start("host", o.bind, o.port) then return end
+    osd(T("hosted", o.port))
+    start_share()
+    offer_resume()
 end
 
 local function join()
@@ -964,6 +1200,215 @@ local function toggle_panel()
     update_panel()
     refresh_menu()
 end
+
+------------------------------------------------------------------ resume memory
+
+-- Per folder of episodes: which file and where we were, while watching in a room.
+local function history_key()
+    local full = current_path()
+    local dir = full and utils.split_path(full)
+    return dir and dir:lower()
+end
+
+local function load_history()
+    if not HISTORY_FILE then return history_mem end
+    local f = io.open(HISTORY_FILE, "r")
+    if not f then return {} end
+    local h = utils.parse_json(f:read("*a") or "")
+    f:close()
+    return type(h) == "table" and h or {}
+end
+
+function remember()
+    if not settings.resume_memory or not role then return end
+    local key, pos, name = history_key(), mp.get_property_number("time-pos"), mp.get_property("filename")
+    if not key or not pos or not name then return end
+    local h = load_history()
+    h[key] = { file = name, pos = pos, t = os.time() }
+    -- Keep the 50 most recent folders.
+    local keys = {}
+    for k, v in pairs(h) do if type(v) == "table" and type(v.t) == "number" then keys[#keys + 1] = k else h[k] = nil end end
+    table.sort(keys, function(x, y) return h[x].t > h[y].t end)
+    for i = 51, #keys do h[keys[i]] = nil end
+    if not HISTORY_FILE then history_mem = h return end
+    local f = io.open(HISTORY_FILE, "w")
+    if f then f:write(utils.format_json(h)) f:close() end
+end
+
+local function resume_to(e)
+    if e.file == mp.get_property("filename") then
+        mp.commandv("seek", e.pos, "absolute+exact")
+        return
+    end
+    for i, entry in ipairs(mp.get_property_native("playlist") or {}) do
+        if basename(entry.filename) == e.file then
+            pending_resume = e.pos  -- the seek happens once the file has loaded
+            mp.commandv("playlist-play-index", i - 1)
+            return
+        end
+    end
+end
+
+-- When the host opens a room in a folder watched before, offer the remembered episode and time.
+function offer_resume()
+    if not settings.resume_memory then return end
+    local key = history_key()
+    local e = key and load_history()[key]
+    if type(e) ~= "table" or type(e.file) ~= "string" or type(e.pos) ~= "number" then return end
+    if e.file == mp.get_property("filename") and math.abs(e.pos - (mp.get_property_number("time-pos") or 0)) < 30 then return end
+    local ok, input = pcall(require, "mp.input")
+    if not ok then return end
+    input.select({
+        prompt = T("resume_prompt", e.file, fmt_time(e.pos)),
+        items = { T("yes"), T("no") },
+        default_item = 1,
+        submit = function(i) if i == 1 then resume_to(e) end end,
+    })
+end
+
+------------------------------------------------------------------ episode sharing
+
+local function host_file_names()
+    local names = {}
+    if not settings.share_files then return names end
+    for _, e in ipairs(mp.get_property_native("playlist") or {}) do
+        if not is_url(e.filename) and #names < 500 then names[#names + 1] = basename(e.filename) end
+    end
+    return names
+end
+
+function send_files(target)
+    if role == "host" then send(target, { t = "files", names = host_file_names(), port = o.share_port }) end
+end
+
+-- share.ps1 serves only files from this mpv's current playlist, by exact name.
+function start_share()
+    if share_helper or role ~= "host" or not settings.share_files then return end
+    local h
+    h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
+        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                 "-File", utils.join_path(mp.get_script_directory(), "share.ps1"),
+                 "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Bind", o.bind, "-Port", tostring(o.share_port) },
+    }, function(_, res)
+        if share_helper ~= h then return end
+        share_helper = nil
+        mp.msg.warn("share.ps1 exited: " .. utils.format_json(res))
+    end)
+    share_helper = h
+end
+
+function stop_share()
+    if not share_helper then return end
+    local h = share_helper
+    share_helper = nil
+    mp.abort_async_command(h)
+end
+
+-- Guests' download menus follow the host's playlist.
+mp.observe_property("playlist-count", "number", function() if role == "host" then send_files("*") end end)
+
+mp.register_script_message("watch-together-share", function(kind, a, b)
+    if kind == "sending" and type(a) == "string" and type(b) == "string" then
+        osd(T("share_sending", short(a, 24), short(b, 60)))
+    elseif kind == "error" then
+        osd(T("error", tostring(a)))
+    end
+end)
+
+------------------------------------------------------------------ episode downloads
+
+local function mb(bytes) return T("mb", (tonumber(bytes) or 0) / 1048576) end
+
+local function next_download()
+    if dl_current then return end
+    if #dl_queue == 0 or role ~= "join" or not host_files or not joined_address then
+        dl_queue = {}
+        refresh_menu()
+        return
+    end
+    local name = table.remove(dl_queue, 1)
+    local h
+    h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
+        args = { "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                 "-File", utils.join_path(mp.get_script_directory(), "fetch.ps1"),
+                 "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Address", joined_address,
+                 "-Port", tostring(host_files.port), "-Name", name, "-Dir", download_dir(), "-Who", room_name or my_name },
+    }, function()
+        if dl_current and dl_current.handle == h then
+            dl_current = nil
+            next_download()
+        end
+    end)
+    dl_current = { name = name, handle = h }
+    osd(T("downloading", name))
+    refresh_menu()
+end
+
+local function queue_download(name)
+    if not safe_name(name) or (dl_current and dl_current.name == name) then return end
+    for _, q in ipairs(dl_queue) do if q == name then return end end
+    dl_queue[#dl_queue + 1] = name
+    next_download()
+end
+
+function cancel_downloads()
+    dl_queue = {}
+    if dl_current then
+        local h = dl_current.handle
+        dl_current = nil  -- the .part file stays, the next download of it continues from there
+        mp.abort_async_command(h)
+    end
+end
+
+mp.register_script_message("watch-together-dl", function(i)
+    local name = host_files and host_files.names[tonumber(i) or 0]
+    if name then queue_download(name) end
+end)
+mp.register_script_message("watch-together-dl-all", function()
+    for _, name in ipairs(missing_files()) do queue_download(name) end
+end)
+mp.register_script_message("watch-together-dl-cancel", function()
+    cancel_downloads()
+    refresh_menu()
+end)
+
+-- From fetch.ps1: progress <name> <bytes> <total> | done <name> <path> | error <name> <text>
+mp.register_script_message("watch-together-dl-event", function(kind, name, a, b)
+    if not dl_current or name ~= dl_current.name then return end
+    if kind == "progress" then
+        local done, total = tonumber(a) or 0, tonumber(b) or 0
+        if total > 0 then mp.osd_message(T("dl_progress", name, math.floor(done * 100 / total), mb(done), mb(total)), 2) end
+    elseif kind == "done" and type(a) == "string" then
+        osd(T("dl_done", name))
+        mp.commandv("loadfile", a, "append")
+        -- The room may be on this episode already.
+        if host_state and host_state.file == name then mp.add_timeout(0.5, apply_host_state) end
+    elseif kind == "error" then
+        osd(T("dl_failed", name, tostring(a)) .. "\n" .. T("dl_hint", host_files and host_files.port or o.share_port))
+    end
+end)
+
+------------------------------------------------------------------ settings
+
+local SETTING_LABELS = { wait_for_others = "set_wait", countdown = "set_countdown",
+                         resume_memory = "set_resume", share_files = "set_share" }
+
+local function toggle_setting(key)
+    if type(settings[key]) ~= "boolean" or not SETTING_LABELS[key] then return end
+    settings[key] = not settings[key]
+    save_settings()
+    local arg = key == "countdown" and (o.countdown > 0 and o.countdown or 10) or o.share_port
+    osd(T(settings[key] and "setting_on" or "setting_off", T(SETTING_LABELS[key], arg)))
+    if key == "wait_for_others" then update_hold() end
+    if key == "countdown" and not settings.countdown and countdown_end then finish_countdown() end
+    if key == "share_files" then
+        if settings.share_files then start_share() else stop_share() end
+        send_files("*")
+    end
+    refresh_menu()
+end
+
+mp.register_script_message("watch-together-setting", toggle_setting)
 
 ------------------------------------------------------------------ auto-update
 
@@ -1059,22 +1504,49 @@ mp.register_event("file-loaded", function()
     quiet_until = mp.get_time() + 3
     local followed = expected_switch ~= nil and expected_switch == mp.get_property_number("playlist-pos")
     expected_switch = nil
+    -- Opening is done. Whatever delays the first frame now is buffering (seen separately) or a pause:
+    -- after a gapless episode change mpv plays out the old audio first, which never ends while paused.
+    loading_since = nil
+    local ended_by_itself = eof_advance
+    eof_advance = false
+    if pending_resume then
+        mp.commandv("seek", pending_resume, "absolute+exact")
+        pending_resume = nil
+    end
     if role == "host" then
         local by = switch_by or my_name
         switch_by = nil
+        -- Pausing right here would stall that old-audio play-out, so the count starts at playback-restart.
+        countdown_pending = ended_by_itself and settings.countdown and status == "hosting"
         if status == "hosting" or status == "listening" then broadcast("file", by) end
+        send_files("*")
     elseif role == "join" then
-        if followed then apply_host_state() else local_action("file") end
+        if followed then apply_host_state()
+        elseif ended_by_itself then keep_file_until = mp.get_time() + 3  -- the host moves on in a moment
+        else local_action("file") end
     end
     refresh_menu()
 end)
 
 mp.register_event("start-file", function() loading_since = mp.get_time() end)
-mp.register_event("end-file", function() loading_since = nil end)  -- also when a file fails to open
+mp.register_event("end-file", function(e)
+    loading_since = nil  -- also when a file fails to open
+    eof_advance = e.reason == "eof"
+end)
 
 mp.register_event("playback-restart", function()
     loading_since = nil
-    if loading then loading = false return end  -- start of a file, not a user seek
+    if loading then  -- start of a file, not a user seek
+        loading = false
+        if countdown_pending then
+            countdown_pending = false
+            if role == "host" and status == "hosting" then
+                start_countdown()
+                broadcast("countdown", nil, nil, true)
+            end
+        end
+        return
+    end
     -- Ours if we landed where we aimed. A user seek merged with ours lands elsewhere and is still sent.
     local pos, now = mp.get_property_number("time-pos"), mp.get_time()
     local ours = false
@@ -1091,7 +1563,15 @@ mp.register_event("playback-restart", function()
     if not ours then local_action("seek") end
 end)
 
+local remember_tick = 0
 mp.add_periodic_timer(1, function()
+    remember_tick = remember_tick + 1
+    if remember_tick % 10 == 0 then remember() end
+    if role == "host" and countdown_end then
+        local left = math.ceil(countdown_end - mp.get_time())
+        if status ~= "hosting" or left <= 0 then finish_countdown()
+        elseif not holding then osd(T("countdown", left)) end
+    end
     if role == "host" and status == "hosting" then
         update_hold()  -- timeouts and members that went silent
         if holding then osd(T("waiting", wait_text(wait_list))) end

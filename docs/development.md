@@ -7,10 +7,13 @@ watch-together/main.lua     menu, sync logic, OSD, updater UI (runs inside mpv)
 watch-together/bridge.ps1   TCP <-> mpv IPC relay; host: many guests, join: one link
 watch-together/sysinfo.ps1  startup: Windows display language + Steam persona name; -Addresses: IPv4 list
 watch-together/update.ps1   GitHub release check / install
+watch-together/share.ps1    host: serves playlist files to guests on share_port
+watch-together/fetch.ps1    guest: downloads one file from share.ps1, resumable
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
 tests/slow_server.py        throttled HTTP file server for buffering.ps1
+tests/features.ps1          settings, downloads, countdown, resume memory (own config folders in %TEMP%)
 install.bat, uninstall.bat
 ```
 
@@ -43,6 +46,13 @@ Host to guests:
 | `state` | `epoch`, `ev`, `by`, `pos`, `paused`, `speed`, `dur`, `file`, `pl`, optional `you`, optional `wait[]` | `ev`: `sync` (to one guest: on hello, or refusing a request), `pause`/`seek`/`speed`/`file` (a change, to all, `epoch` +1, `by` = who did it), `hold`/`resume` (the room starts/stops waiting), `tick` (every second, same `epoch`). `wait` lists `{name, reason}` while the room waits |
 | `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host), `wait` |
 | `notice` | `key` (`joined`/`left`/`gave_up`), `name` | for the OSD |
+| `files` | `names[]`, `port` | the host's local playlist file names (empty when sharing is off), on hello and on every playlist or file change |
+
+State events added in 1.4:
+
+- `countdown`: the next episode started by itself and everyone pauses; the state carries `countdown` (seconds left), and so do ticks.
+- `go`: the count ended and everyone plays.
+- `wait_req`: someone pressed play during the count; the field is `who`, not `by`, so the guest who asked applies it too.
 | `welcome` | `you` | instead of `sync` when the host has no file loaded |
 | `pong` | `id` | RTT |
 
@@ -96,6 +106,42 @@ Test: `tests\buffering.ps1` (needs python). B streams the test videos from `test
 - a 6 s timeout plays on.
 
 Last run: 8/8. Screenshots checked: the host sees "Ждём: Аня (буферизация)", the guest sees "Ждём: тебя (буферизация)", then "Все готовы, продолжаем".
+
+### Next-episode countdown
+
+- `end-file` with reason `eof` sets `eof_advance`.
+- On the host's next `file-loaded`, `countdown_pending` is set (when the setting is on and guests are there).
+- On the first `playback-restart` of that file, the host pauses, sets `countdown_end`, and broadcasts `countdown`. Pausing at `file-loaded` instead would deadlock: after a gapless change mpv first plays out the old audio, which never finishes while paused (see bugs.md).
+- The 1 s timer shows the count and calls `finish_countdown()` at 0, which plays and broadcasts `go` (or leaves it to the buffering hold).
+- A play during the count, from the host or a guest request, calls `stop_countdown(who)`: it pauses again, sets `want_paused`, and broadcasts `wait_req`. The next play is an ordinary unpause.
+- A guest that reached the end by itself sets `keep_file_until = now + 3` and does not follow the host back to the old episode meanwhile.
+
+### Resume memory
+
+`remember()` runs every 10 s and in `stop()` while `role` is set. It stores `{file, pos, t}` under the lower-cased folder of the current local file in `~~/watch_together_history.json` (50 newest folders). `host()` calls `offer_resume()`, which asks with `mp.input.select` when the remembered file differs or is more than 30 s from the current position. "Yes" seeks, or switches the file and seeks on `file-loaded` (`pending_resume`).
+
+### Settings and state files
+
+`settings` (`wait_for_others`, `countdown`, `resume_memory`, `share_files`) start from the conf options, and are then overridden by `~~/watch_together_settings.json`, which the menu toggles write. `state_file()` returns nil when `~~/` does not expand to an absolute path: with `--no-config` it becomes a bare relative name. Then settings and history stay in memory, so test runs never write into the folder mpv was started from.
+
+### Episode sharing
+
+The host starts `share.ps1` with the room when `share_files` is on. It connects to the mpv pipe and listens on `bind:share_port`.
+
+Protocol, one connection per file:
+
+1. The guest sends a JSON line `{file, offset, who}`.
+2. The host answers with `{size, offset}` or `{error}`, then the raw bytes from `offset`.
+
+`file` must be the exact file name of a local entry of the host's current playlist, queried from mpv for every request. Names with path characters are refused, and so is everything else: verified with `..\..\Windows\win.ini`, an absolute path, and a file next to the episodes. Transfers run concurrently via `CopyToAsync`.
+
+The guest menu lists host names that are neither in the guest's playlist nor in `download_dir()`:
+
+- `download_dir` option if set;
+- else the current file's folder;
+- else `%USERPROFILE%\Downloads`.
+
+Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
 
 ### Paused precision
 
@@ -166,6 +212,8 @@ Spread is measured with every playing position moved back to the time of the fir
 Last results (mpv 0.41.0-dev, one PC):
 
 - e2e: 26/26.
+- features: 14/14.
+- buffering: 8/8.
 - scale with 5 guests: 6/6 runs.
 - scale with 20 guests: connect + sync 1.4 s, pause to all 0.28 s, guest seek to all 0.36 s, spread under 0.2 s, host bridge about 2.5% of a core.
 

@@ -44,6 +44,16 @@ Symptom: with 21 players, "spread" was up to 0.4 s although the players were in 
 ## Test artifact: throttling a stream showed no buffering
 Symptom: the guest played on for 30+ s at 6 KB/s, a sixth of the bitrate. Cause: with the server unthrottled at start, it pushed megabytes into the loopback TCP buffers, and mpv kept reading from them. `--demuxer-max-bytes` did not limit this, and mpv showed `Cache: 599s`. Fix: in the test, start the stream at a rate slightly above the bitrate with `--cache-secs=5`, then slow it down; buffering starts within seconds.
 
+## Countdown deadlock after an episode ends by itself
+Symptom: the next episode opened paused, but the countdown never started it. Cause: after a gapless change, mpv plays out the old audio first ("blocked, waiting for old audio to play"). Pausing at `file-loaded` stopped that, so `playback-restart` never came. The plugin then saw "still loading" and held the room, and the countdown waited for the hold. Fixes:
+1. Start the countdown at the first `playback-restart`.
+2. "Loading" ends at `file-loaded`; later delays are buffering, which is detected separately.
+
+Verified: features.ps1 countdown checks pass, and buffering.ps1 still sees the slow-load case.
+
+## `~~/` without a config folder
+Cause: with `--no-config`, `expand-path ~~/x` returns plain `x`, so state files would land in mpv's working folder (the project folder in tests). Fix: `state_file()` returns nil unless the path is absolute; then nothing is written. Verified: no `watch_together_*.json` in the project after all test runs.
+
 ## Leftover test mpv instances
 Symptom: a test run where nobody connects and the status property is empty. Cause: an earlier diagnostic run piped into `Select-Object -First`, which stopped the script before its `finally` and left 12 mpv instances holding the `wt-scale-*` pipe names. Fix: never truncate test output that way; kill leftovers by pipe name (`CommandLine -match 'wt-'`), never all mpv processes.
 
