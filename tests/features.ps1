@@ -92,6 +92,8 @@ try {
     $null = I $a @('playlist-next')
     $ok = Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'path')) -like 'http*' } 15
     Check 'guest follows the host onto a streamed episode' $ok ''
+    $cache = '{0}/{1}' -f ((I $b @('get_property', 'demuxer-max-bytes')) / 1MB), ((I $b @('get_property', 'demuxer-max-back-bytes')) / 1MB)
+    Check 'stream gets 384/128 MB of cache' ($cache -eq '384/128') $cache
     $null = I $a @('set_property', 'pause', $false)
     $null = I $a @('seek', 300, 'absolute')
     $ok = Wait-Until { $pa = I $a @('get_property', 'time-pos'); $pb = I $b @('get_property', 'time-pos')
@@ -102,6 +104,8 @@ try {
     Check 'turning it off removes the streams' $ok ''
     $null = I $a @('playlist-prev')
     [void](Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep1.mkv' } 10)
+    $cache = '{0}/{1}' -f ((I $b @('get_property', 'demuxer-max-bytes')) / 1MB), ((I $b @('get_property', 'demuxer-max-back-bytes')) / 1MB)
+    Check 'a local file keeps mpv''s cache size' ($cache -eq '150/50') $cache
 
     # Download with a partial file already there: it must continue and end byte-identical.
     $part = Join-Path $bDir 'watch-together-ep2.mkv.part'

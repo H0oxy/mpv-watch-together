@@ -30,6 +30,7 @@ local o = {
     share_files = true,     -- host: let guests download episodes from the host's playlist
     share_port = 47801,     -- host: port for those downloads (share it in Porthole next to port)
     download_dir = "",      -- guest: where downloads go; empty = next to the current file, else Downloads
+    stream_cache = 512,     -- guest: MB of RAM for an episode watched from the host, 3/4 ahead, 1/4 behind; 0 = mpv's own
 }
 options.read_options(o, "watch_together")
 local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10  -- also the length offered when the setting is off
@@ -1498,6 +1499,15 @@ end)
 ------------------------------------------------------------------ watching from the host
 
 local function stream_prefix() return stream_port and ("http://127.0.0.1:" .. stream_port .. "/") end
+
+-- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host get more.
+mp.add_hook("on_load", 50, function()
+    local prefix = stream_prefix()
+    if not prefix or o.stream_cache <= 0 then return end
+    if mp.get_property("stream-open-filename", ""):sub(1, #prefix) ~= prefix then return end
+    mp.set_property("file-local-options/demuxer-max-bytes", math.floor(o.stream_cache * 3 / 4) .. "MiB")
+    mp.set_property("file-local-options/demuxer-max-back-bytes", math.floor(o.stream_cache / 4) .. "MiB")
+end)
 
 -- Every host episode not in the playlist yet goes in as a stream, so follow_file finds it by name.
 function add_streams()

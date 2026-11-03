@@ -153,6 +153,8 @@ Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and con
 
 `stream.ps1` answers one mpv request at a time; a new one (a seek) drops the old. It fetches 2 MB pieces with `length` over 4 connections at once and sends them to mpv in order; the first piece goes to mpv as it arrives. A piece whose connection breaks is asked for again from where it stopped, up to 3 times. Turning it off, leaving or losing the room stops `stream.ps1` and removes the stream entries.
 
+An `on_load` hook gives these URLs a bigger cache through `file-local-options`: `stream_cache` MB (512 by default), 3/4 as `demuxer-max-bytes`, 1/4 as `demuxer-max-back-bytes`. mpv's own 150/50 MB is about a minute of 4K ahead. Local files keep the user's settings. Test: features.ps1 "stream gets 384/128 MB of cache", "a local file keeps mpv's cache size".
+
 Why several connections: through Porthole one connection got 28 Mbit/s, 4 got 38, 8 got 44 (`tests\speed.ps1`, a real two-PC link). The tunnel caps the total, so more connections give less and less. One 4K episode (~19 Mbit/s) fits; several 4K guests share the cap. Loopback through `stream.ps1`: 188 MB/s, byte-identical for ranges at 0, 1, piece edges and the last byte, 416 past the end.
 
 Test: `features.ps1` "host episodes added as streams", "guest follows the host onto a streamed episode", "streamed episode plays in sync after a seek", "turning it off removes the streams".

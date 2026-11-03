@@ -108,6 +108,7 @@ resume_memory=yes   # remember episode and time, offer them when hosting again
 share_files=yes     # let guests download episodes from the host
 share_port=47801    # port for those downloads
 download_dir=       # a fixed folder for downloads; empty = the menu choice (open video's folder or Downloads)
+stream_cache=512    # MB of RAM for an episode watched from the host: 3/4 ahead, 1/4 behind; 0 = mpv's default
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 
