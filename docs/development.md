@@ -9,11 +9,13 @@ watch-together/sysinfo.ps1  startup: Windows display language + Steam persona na
 watch-together/update.ps1   GitHub release check / install
 watch-together/share.ps1    host: serves playlist files to guests on share_port
 watch-together/fetch.ps1    guest: downloads one file from share.ps1, resumable
+watch-together/stream.ps1   guest: local HTTP server for mpv, fetches pieces from share.ps1 over 4 connections
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
 tests/slow_server.py        throttled HTTP file server for buffering.ps1
-tests/features.ps1          settings, downloads, countdown, resume memory (own config folders in %TEMP%)
+tests/features.ps1          settings, watching from host, downloads, countdown, resume memory (own config folders in %TEMP%)
+tests/speed.ps1             manual: download speed from a host's share port with 1, 2, 4, 8 connections
 install.bat, uninstall.bat
 ```
 
@@ -133,6 +135,8 @@ Protocol, one connection per file:
 1. The guest sends a JSON line `{file, offset, who}`.
 2. The host answers with `{size, offset}` or `{error}`, then the raw bytes from `offset`.
 
+With `length` in the request (a piece for `stream.ps1`), the host reads exactly that many bytes (at most 16 MB) into memory and sends them; an offset outside the file gets `{error: "bad range", size}` instead of a restart from 0. Pieces are announced on the host once per guest and file (`watching`), not per request.
+
 `file` must be the exact file name of a local entry of the host's current playlist, queried from mpv for every request. Names with path characters are refused, and so is everything else: verified with `..\..\Windows\win.ini`, an absolute path, and a file next to the episodes. Transfers run concurrently via `CopyToAsync`.
 
 The guest menu lists host names that are neither in the guest's playlist nor in `download_dir()`:
@@ -142,6 +146,16 @@ The guest menu lists host names that are neither in the guest's playlist nor in 
 - else the Downloads folder: the real one from `sysinfo.ps1` (`shell:Downloads`, it can be moved), `%USERPROFILE%\Downloads` until that answer arrives.
 
 Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. It never replaces an existing file: the target folder is chosen when each download starts and can change while a queue runs. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
+
+### Watching from the host
+
+"Watch from host without downloading" (guest menu) starts `stream.ps1`. It listens on a free port of 127.0.0.1 and reports `ready <port>`; `main.lua` then appends `http://127.0.0.1:<port>/<percent-encoded name>` for every host file not in the playlist, and `follow_file` finds them by name like local files (`basename` decodes URLs, a local copy wins over a stream). mpv's `filename` of such a URL is the decoded name, so status, sync and history see the host's file name.
+
+`stream.ps1` answers one mpv request at a time; a new one (a seek) drops the old. It fetches 2 MB pieces with `length` over 4 connections at once and sends them to mpv in order; the first piece goes to mpv as it arrives. A piece whose connection breaks is asked for again from where it stopped, up to 3 times. Turning it off, leaving or losing the room stops `stream.ps1` and removes the stream entries.
+
+Why several connections: through Porthole one connection got 28 Mbit/s, 4 got 38, 8 got 44 (`tests\speed.ps1`, a real two-PC link). The tunnel caps the total, so more connections give less and less. One 4K episode (~19 Mbit/s) fits; several 4K guests share the cap. Loopback through `stream.ps1`: 188 MB/s, byte-identical for ranges at 0, 1, piece edges and the last byte, 416 past the end.
+
+Test: `features.ps1` "host episodes added as streams", "guest follows the host onto a streamed episode", "streamed episode plays in sync after a seek", "turning it off removes the streams".
 
 ### Paused precision
 

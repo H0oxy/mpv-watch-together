@@ -7,6 +7,7 @@ A host and any number of guests, each with its own copy of the same video: mpv s
 - `watch-together/sysinfo.ps1`: Windows language and Steam name at startup.
 - `watch-together/update.ps1`: checks and installs GitHub releases.
 - `watch-together/share.ps1` / `fetch.ps1`: episode download, host side / guest side.
+- `watch-together/stream.ps1`: guest's local HTTP server for watching from the host without downloading.
 - `install.bat` / `uninstall.bat`: copy the plugin to, or remove it from, `%APPDATA%\mpv\scripts\watch-together`.
 
 Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1`, `tests\features.ps1` (need `ffmpeg` on PATH the first time; buffering also needs `python`).

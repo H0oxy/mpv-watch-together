@@ -1,6 +1,7 @@
 # Episode sharing for watch-together (host): serves files of mpv's current playlist, by exact name, over TCP.
 # Request: one JSON line {"file": "<name>", "offset": <bytes already there>, "who": "<guest>"}.
 # Answer: one JSON line {"size": <total>, "offset": <start>} or {"error": "<text>"}, then the bytes from offset.
+# With "length" (stream.ps1, watching without downloading) only that many bytes, and a bad offset is an error.
 # Several downloads run at once through async copies. ASCII only, like bridge.ps1.
 param(
     [Parameter(Mandatory)][string]$Pipe,
@@ -67,6 +68,7 @@ try {
 }
 
 $transfers = New-Object System.Collections.ArrayList
+$watchers = New-Object 'System.Collections.Generic.HashSet[string]'  # "who|file" already announced: a stream asks for many pieces
 $accept = $listener.AcceptTcpClientAsync()
 while ($true) {
     $tasks = @($mpvTask, $accept)
@@ -100,6 +102,31 @@ while ($true) {
                 if (-not $path) {
                     Write-Line $s @{ error = 'not shared' }
                     $client.Close()
+                } elseif ($req.length) {
+                    # A piece for watching without downloading (stream.ps1): exactly these bytes, from memory.
+                    $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+                    try {
+                        $size = $fs.Length
+                        $offset = [int64]$req.offset
+                        $len = [int64]$req.length
+                        if ($offset -lt 0 -or $offset -ge $size -or $len -le 0 -or $len -gt 16MB) {
+                            Write-Line $s @{ error = 'bad range'; size = $size }
+                            $client.Close()
+                        } else {
+                            $data = New-Object byte[] ([Math]::Min($len, $size - $offset))
+                            [void]$fs.Seek($offset, 'Begin')
+                            $got = 0
+                            while ($got -lt $data.Length) {
+                                $n = $fs.Read($data, $got, $data.Length - $got)
+                                if ($n -le 0) { break }
+                                $got += $n
+                            }
+                            Write-Line $s @{ size = $size; offset = $offset }
+                            [void]$transfers.Add(@{ client = $client; task = $s.WriteAsync($data, 0, $got) })
+                            $who = ([string]$req.who) -replace '[^\w .()\-]', ''
+                            if ($watchers.Add("$who|$name")) { Send-Lua @('watching', $who, $name) }
+                        }
+                    } finally { $fs.Close() }
                 } else {
                     $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
                     $offset = [int64]0
@@ -118,12 +145,12 @@ while ($true) {
 
     foreach ($t in @($transfers)) {
         if ($t.task.IsCompleted) {
-            $t.file.Close()
+            if ($t.file) { $t.file.Close() }
             $t.client.Close()
             $transfers.Remove($t)
         }
     }
 }
 
-foreach ($t in $transfers) { $t.file.Close(); $t.client.Close() }
+foreach ($t in $transfers) { if ($t.file) { $t.file.Close() }; $t.client.Close() }
 $listener.Stop()

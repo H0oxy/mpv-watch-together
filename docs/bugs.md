@@ -81,5 +81,8 @@ Risk (found in an audit): "Download all" picks the folder when each queued file 
 ## A guest seek during a hold started the room
 Risk (found in an audit, race of about one RTT): only `pause` requests were held back while the room waits. A seek or speed request sent before the guest saw the hold carried `paused=false`, so the host played and broadcast it. Fix: while `holding` or counting down, the host forces `paused = true` on any request. Not reproduced; e2e, buffering and features still pass.
 
+## A finished download was sometimes not added to the playlist
+Symptom: features.ps1 failed "downloaded episode added to the playlist" about once in five runs; the file was complete, the guest later ran out of episodes and stood idle. Cause: `fetch.ps1` sends `done` and exits; the subprocess callback can run first and clear `dl_current`, and the handler dropped events for anything but `dl_current`. Fix: the callback keeps the name in `dl_finished`, and a `done` for it is still accepted. Verified: features.ps1 passed in 4 runs after the fix; the race was not reproduced on demand.
+
 ## One peer that stops reading blocks the host bridge
 Risk (found in an audit): writes to peers are blocking. A peer whose TCP window stays at zero would stop the bridge loop for everyone. Fix: `SendTimeout = 5000` on each peer socket; the write throws and the peer is closed. Not reproduced; whether Porthole passes back-pressure is unknown.

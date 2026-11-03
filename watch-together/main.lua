@@ -165,6 +165,11 @@ local STRINGS = {
         dl_failed = "Не удалось скачать %s: %s",
         dl_hint = "Проверь, что хост добавил порт %d в лобби Porthole",
         share_sending = "%s скачивает %s",
+        share_watching = "%s смотрит у тебя %s",
+        stream_menu = "Смотреть с хоста без скачивания",
+        stream_on = "Серии хоста, которых у тебя нет, добавлены в плейлист и будут играть с хоста",
+        stream_off = "Просмотр с хоста выключен",
+        stream_failed = "Просмотр с хоста: %s",
         mb = "%.0f МБ",
         save_to = "Куда сохранять",
         save_video = "В папку открытого видео",
@@ -261,6 +266,11 @@ local STRINGS = {
         dl_failed = "Could not download %s: %s",
         dl_hint = "Check that the host shared port %d in the Porthole lobby",
         share_sending = "%s is downloading %s",
+        share_watching = "%s is watching %s from you",
+        stream_menu = "Watch from host without downloading",
+        stream_on = "Host episodes you lack are in the playlist and play from the host",
+        stream_off = "Watching from host is off",
+        stream_failed = "Watching from host: %s",
         mb = "%.0f MB",
         save_to = "Save to",
         save_video = "The open video's folder",
@@ -333,8 +343,13 @@ local host_files            -- guest: {names, port} the host offers
 local joined_address        -- guest: address the room was joined at; downloads go there too
 local dl_queue = {}         -- guest: names waiting to download
 local dl_current            -- guest: {name, handle} of the running fetch.ps1
+local dl_finished           -- guest: name of the last download whose process has exited
 local share_helper          -- host: async handle of share.ps1
+local streaming = false     -- guest: host episodes this guest lacks play from the host through stream.ps1
+local stream_helper         -- guest: async handle of stream.ps1
+local stream_port           -- guest: its local HTTP port, once it is ready
 local remember, start_share, stop_share, send_files, cancel_downloads, offer_resume  -- defined further down
+local add_streams, stop_stream
 
 local show_panel = false
 local PANEL_LINES = 20
@@ -359,7 +374,14 @@ end
 -- "&" is a mnemonic in Windows menus.
 local function menu_name(name) return (short(name, 60):gsub("&", "&&")) end
 
-local function basename(path) return path:match("[^/\\]+$") or path end
+local function is_url(path) return path:find("^%a[%w+.-]*://") ~= nil end
+
+-- A stream from the host (stream.ps1) carries the file name percent-encoded at the end of its URL.
+local function basename(path)
+    local name = path:match("[^/\\]+$") or path
+    if is_url(path) then name = name:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end) end
+    return name
+end
 
 local function in_room() return status == "connected" or status == "lost" or status == "hosting" end
 
@@ -437,8 +459,6 @@ local function update_panel()
     panel:update()
 end
 
-local function is_url(path) return path:find("^%a[%w+.-]*://") ~= nil end
-
 -- Full path of the current file, or nil for streams.
 local function current_path()
     local path = mp.get_property("path")
@@ -467,11 +487,14 @@ local function safe_name(name)
        and name:match('^[^\\/:*?"<>|%c]+$') ~= nil
 end
 
--- Host episodes this guest has neither in the playlist nor in the download folder.
+-- Host episodes this guest has neither in the playlist nor in the download folder. One that only
+-- plays from the host still counts as missing: it can be downloaded.
 local function missing_files()
     if not host_files then return {} end
     local have = {}
-    for _, e in ipairs(mp.get_property_native("playlist") or {}) do have[basename(e.filename)] = true end
+    for _, e in ipairs(mp.get_property_native("playlist") or {}) do
+        if not is_url(e.filename) then have[basename(e.filename)] = true end
+    end
     local dir, list = download_dir(), {}
     for _, name in ipairs(host_files.names) do
         if not have[name] and not utils.file_info(utils.join_path(dir, name)) then list[#list + 1] = name end
@@ -512,6 +535,7 @@ local function menu_item()
         items[#items + 1] = { title = T("control_is", control_text(r.control)), state = { "disabled" } }
     end
     if role == "join" and host_files and #host_files.names > 0 then
+        items[#items + 1] = { title = T("stream_menu"), cmd = "script-message watch-together-stream-toggle", state = st(false, streaming) }
         local sub = {}
         if dl_current then
             sub[#sub + 1] = { title = T("downloading", menu_name(dl_current.name)), state = { "disabled" } }
@@ -655,16 +679,21 @@ local function same_file(dur)
     return false
 end
 
--- Same file name in my playlist first; different releases fall back to the same playlist position.
+-- Same file name in my playlist first, a local copy before a stream from the host; different
+-- releases fall back to the same playlist position.
 local function follow_file(m)
     if type(m.file) ~= "string" or m.file == mp.get_property("filename") then return false end
     -- We just moved on to the next episode by ourselves; the host gets there a moment later.
     if role == "join" and mp.get_time() < keep_file_until then return false end
     local playlist = mp.get_property_native("playlist") or {}
-    local index
+    local index, stream_index
     for i, entry in ipairs(playlist) do
-        if basename(entry.filename) == m.file then index = i - 1 break end
+        if basename(entry.filename) == m.file then
+            if not is_url(entry.filename) then index = i - 1 break end
+            stream_index = stream_index or i - 1
+        end
     end
+    index = index or stream_index
     if not index and type(m.pl) == "number" and m.pl >= 0 and m.pl < #playlist then index = m.pl end
     if not index or index == mp.get_property_number("playlist-pos") then return false end
     expected_switch = index
@@ -952,6 +981,7 @@ local function on_host_message(m)
         end
         local port = tonumber(m.port)
         host_files = (port and port >= 1 and port <= 65535) and { names = names, port = port } or nil
+        add_streams()
         refresh_menu()
     elseif m.t == "notice" and type(m.name) == "string" then
         if m.key == "joined" then osd(T("joined", m.name))
@@ -1115,6 +1145,7 @@ local function stop()
     remember()
     stop_share()
     cancel_downloads()
+    stop_stream()
     role, members, room, host_state, pending, switch_by, room_name = nil, {}, nil, nil, nil, nil, nil
     holding, wait_list, countdown_end, countdown_pending, host_files = false, {}, nil, false, nil
     set_status("off")
@@ -1384,6 +1415,8 @@ mp.observe_property("playlist-count", "number", function() if role == "host" the
 mp.register_script_message("watch-together-share", function(kind, a, b)
     if kind == "sending" and type(a) == "string" and type(b) == "string" then
         osd(T("share_sending", short(a, 24), short(b, 60)))
+    elseif kind == "watching" and type(a) == "string" and type(b) == "string" then
+        osd(T("share_watching", short(a, 24), short(b, 60)))
     elseif kind == "error" then
         osd(T("error", tostring(a)))
     end
@@ -1407,6 +1440,7 @@ local function next_download()
                        "-Port", tostring(host_files.port), "-Name", name, "-Dir", download_dir(), "-Who", room_name or my_name),
     }, function()
         if dl_current and dl_current.handle == h then
+            dl_finished = name  -- its "done" message can arrive after the process has exited
             dl_current = nil
             next_download()
         end
@@ -1446,7 +1480,8 @@ end)
 
 -- From fetch.ps1: progress <name> <bytes> <total> | done <name> <path> | error <name> <text>
 mp.register_script_message("watch-together-dl-event", function(kind, name, a, b)
-    if not dl_current or name ~= dl_current.name then return end
+    if not (dl_current and name == dl_current.name) and not (kind == "done" and name == dl_finished) then return end
+    if kind == "done" then dl_finished = nil end
     if kind == "progress" then
         local done, total = tonumber(a) or 0, tonumber(b) or 0
         if total > 0 then mp.osd_message(T("dl_progress", name, math.floor(done * 100 / total), mb(done), mb(total)), 2) end
@@ -1457,6 +1492,80 @@ mp.register_script_message("watch-together-dl-event", function(kind, name, a, b)
         if host_state and host_state.file == name then mp.add_timeout(0.5, apply_host_state) end
     elseif kind == "error" then
         osd(T("dl_failed", name, tostring(a)) .. "\n" .. T("dl_hint", host_files and host_files.port or o.share_port))
+    end
+end)
+
+------------------------------------------------------------------ watching from the host
+
+local function stream_prefix() return stream_port and ("http://127.0.0.1:" .. stream_port .. "/") end
+
+-- Every host episode not in the playlist yet goes in as a stream, so follow_file finds it by name.
+function add_streams()
+    local prefix = stream_prefix()
+    if not prefix or not host_files then return end
+    local have = {}
+    for _, e in ipairs(mp.get_property_native("playlist") or {}) do have[basename(e.filename)] = true end
+    for _, name in ipairs(host_files.names) do
+        if not have[name] then
+            local enc = name:gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)
+            mp.commandv("loadfile", prefix .. enc, "append")
+        end
+    end
+end
+
+local function start_stream()
+    if stream_helper or role ~= "join" or not host_files or not joined_address then return end
+    streaming = true
+    local h
+    h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
+        args = ps_args("stream.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Address", joined_address,
+                       "-Port", tostring(host_files.port), "-Who", room_name or my_name),
+    }, function(_, res)
+        if stream_helper ~= h then return end
+        mp.msg.warn("stream.ps1 exited: " .. utils.format_json(res))
+        stop_stream()
+        refresh_menu()
+    end)
+    stream_helper = h
+end
+
+-- The streams leave the playlist with stream.ps1: nothing would answer them.
+function stop_stream()
+    streaming = false
+    if stream_helper then
+        local h = stream_helper
+        stream_helper = nil
+        mp.abort_async_command(h)
+    end
+    local prefix = stream_prefix()
+    stream_port = nil
+    if not prefix then return end
+    local playlist = mp.get_property_native("playlist") or {}
+    for i = #playlist, 1, -1 do
+        if playlist[i].filename:sub(1, #prefix) == prefix then mp.commandv("playlist-remove", i - 1) end
+    end
+end
+
+mp.register_script_message("watch-together-stream-toggle", function()
+    if streaming then
+        stop_stream()
+        osd(T("stream_off"))
+    else
+        start_stream()
+    end
+    refresh_menu()
+end)
+
+-- From stream.ps1: ready <port> | error <text>
+mp.register_script_message("watch-together-stream", function(kind, a)
+    if kind == "ready" and stream_helper and tonumber(a) then
+        stream_port = tonumber(a)
+        add_streams()
+        osd(T("stream_on"))
+        -- The room may be on an episode only the host has.
+        if host_state then mp.add_timeout(0.5, apply_host_state) end
+    elseif kind == "error" then
+        osd(T("stream_failed", tostring(a)) .. "\n" .. T("dl_hint", host_files and host_files.port or o.share_port))
     end
 end)
 

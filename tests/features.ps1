@@ -1,5 +1,5 @@
-# Settings, episode download, next-episode countdown and resume memory, with a host (A) and a guest (B).
-# B has only episode 1 and downloads episode 2 from A. Each player gets its own config folder in
+# Settings, watching from the host, episode download, next-episode countdown and resume memory, with a
+# host (A) and a guest (B). B has only episode 1, watches episode 2 from A, then downloads it. Each player gets its own config folder in
 # %TEMP%, so settings and history are really written, but never into the user's mpv folder.
 # Usage: powershell -ExecutionPolicy Bypass -File tests\features.ps1 -Mpv C:\path\mpv.exe
 # Needs the test videos that e2e.ps1 creates in %TEMP%.
@@ -84,6 +84,25 @@ try {
     $denied = @('..\..\Windows\win.ini', 'watch-together-rate.txt', 'C:\Windows\win.ini') | ForEach-Object { Ask-Share $_ }
     Check 'files outside the playlist are refused' (-not ($denied | Where-Object { $_ -notmatch 'not shared' })) ($denied -join ' | ')
 
+    # Watching from the host: B lacks episode 2 and plays it from A through stream.ps1.
+    $null = I $b @('script-message', 'watch-together-stream-toggle')
+    $ok = Wait-Until { (I $b @('get_property', 'playlist-count')) -eq 2 } 10
+    $url = I $b @('get_property', 'playlist/1/filename')
+    Check 'host episodes added as streams' ($ok -and $url -like 'http://127.0.0.1:*/watch-together-ep2.mkv') "$url"
+    $null = I $a @('playlist-next')
+    $ok = Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'path')) -like 'http*' } 15
+    Check 'guest follows the host onto a streamed episode' $ok ''
+    $null = I $a @('set_property', 'pause', $false)
+    $null = I $a @('seek', 300, 'absolute')
+    $ok = Wait-Until { $pa = I $a @('get_property', 'time-pos'); $pb = I $b @('get_property', 'time-pos')
+                       $pa -gt 300 -and $pb -and [math]::Abs($pa - $pb) -lt 0.3 -and -not (I $b @('get_property', 'pause')) } 15
+    Check 'streamed episode plays in sync after a seek' $ok ("A {0:N2} B {1:N2}" -f (I $a @('get_property', 'time-pos')), (I $b @('get_property', 'time-pos')))
+    $null = I $b @('script-message', 'watch-together-stream-toggle')
+    $ok = Wait-Until { (I $b @('get_property', 'playlist-count')) -eq 1 } 5
+    Check 'turning it off removes the streams' $ok ''
+    $null = I $a @('playlist-prev')
+    [void](Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep1.mkv' } 10)
+
     # Download with a partial file already there: it must continue and end byte-identical.
     $part = Join-Path $bDir 'watch-together-ep2.mkv.part'
     $head = New-Object byte[] 3000000
@@ -102,7 +121,8 @@ try {
     $null = I $a @('seek', 596, 'absolute')
     $ok = Wait-Until { (I $a @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' } 15
     $paused = (I $a @('get_property', 'pause')) -and (I $b @('get_property', 'pause'))
-    Check 'next episode starts paused for everyone' ($ok -and $paused) ''
+    Check 'next episode starts paused for everyone' ($ok -and $paused) ("A {0} {1} B {2} {3}" -f (I $a @('get_property', 'filename')),
+        (I $a @('get_property', 'pause')), (I $b @('get_property', 'filename')), (I $b @('get_property', 'pause')))
     $ok = Wait-Until { -not (I $a @('get_property', 'pause')) -and -not (I $b @('get_property', 'pause')) } 6
     Check 'countdown ends, everyone plays' $ok ''
 

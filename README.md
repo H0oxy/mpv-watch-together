@@ -61,6 +61,8 @@ When the host opens a room in a folder the group watched before, mpv asks "Conti
 
 A guest who is missing an episode the host has can get it under Download from host (Скачать у хоста): one episode or all missing ones. The file goes into the folder of the video you have open, next to your other episodes, and joins the playlist; an interrupted download continues where it stopped. Under Save to (Куда сохранять) in the same submenu you can switch to your Downloads folder instead. The host shares only the files in its mpv playlist, nothing else on its disk. Downloads use a second port (47801), which the host shares in Porthole next to 47800.
 
+To watch without downloading, a guest turns on Watch from host without downloading (Смотреть с хоста без скачивания). The host's episodes that the guest lacks join the playlist and play straight from the host over the same port 47801, fetched over several connections at once. The tunnel limits the speed: on one real Porthole link it gave about 40 Mbit/s in total, enough for one 4K episode, while several guests watching 4K this way share it.
+
 Each of these can be turned off under Settings (Настройки), When you host (Когда ты хост), along with waiting for stalled members. The choices are kept between sessions.
 
 The menu lists the members with their files, and Show members' time on screen (Время участников на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
