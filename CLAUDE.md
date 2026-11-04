@@ -10,7 +10,7 @@ A host and any number of guests, each with its own copy of the same video: mpv s
 - `watch-together/stream.ps1`: guest's local HTTP server for watching from the host without downloading.
 - `install.bat` / `uninstall.bat`: copy the plugin to, or remove it from, `%APPDATA%\mpv\scripts\watch-together`.
 
-Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1`, `tests\features.ps1` (need `ffmpeg` on PATH the first time; buffering also needs `python`).
+Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1`, `tests\features.ps1`, `tests\stream.ps1` (need `ffmpeg` on PATH the first time; buffering also needs `python`).
 
 Release: bump `VERSION` in `main.lua`, commit, push, create GitHub release `v<VERSION>`. Users get asked to update at the next mpv start.
 

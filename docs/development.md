@@ -15,6 +15,7 @@ tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
 tests/slow_server.py        throttled HTTP file server for buffering.ps1
 tests/features.ps1          settings, watching from host, downloads, countdown, resume memory (own config folders in %TEMP%)
+tests/stream.ps1            stream.ps1 + share.ps1 without a room: byte ranges of a 50 MB and a sparse 5 GB file
 tests/speed.ps1             manual: download speed from a host's share port with 1, 2, 4, 8 connections
 install.bat, uninstall.bat
 ```

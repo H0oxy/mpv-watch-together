@@ -10,7 +10,7 @@ param(
     [Parameter(Mandatory)][int]$Port,
     [string]$Who = '',
     [int]$Connections = 4,
-    [int]$Chunk = 2MB
+    [int64]$Chunk = 2MB   # int64: [Math]::Min picks its overload by this argument, and files pass 2 GB
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
