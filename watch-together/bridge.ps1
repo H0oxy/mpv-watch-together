@@ -26,7 +26,7 @@ function Send-Lua([string[]]$msg) {
 }
 
 $listener = $null
-$peers = @{}          # id -> @{ c = TcpClient; r = reader; w = writer; t = pending ReadLineAsync }
+$peers = @{}          # id -> @{ c = TcpClient; s = stream; w = writer; buf; acc = bytes of an unfinished line; t = pending ReadAsync }
 $nextId = 1
 $netTask = $null      # pending AcceptTcpClientAsync / ConnectAsync
 $joinClient = $null
@@ -44,11 +44,27 @@ function Add-Peer($client) {
     $client.NoDelay = $true
     $client.SendTimeout = 5000  # a peer that stops reading must not block the whole room; the write throws and the peer is closed
     $s = $client.GetStream()
-    $r = New-Object System.IO.StreamReader($s, $utf8)
     $w = New-Object System.IO.StreamWriter($s, $utf8)
     $w.AutoFlush = $true
-    $script:peers[$id] = @{ c = $client; r = $r; w = $w; t = $r.ReadLineAsync() }
+    $buf = New-Object byte[] 65536
+    $script:peers[$id] = @{ c = $client; s = $s; w = $w; buf = $buf; acc = (New-Object System.IO.MemoryStream); t = $s.ReadAsync($buf, 0, $buf.Length) }
     Send-Lua @('connected', $id)
+}
+
+# Pass on every complete line of what arrived. A line is cut into bytes first and decoded whole, so a
+# character split between two reads stays intact. Returns $false when a peer sends a line over
+# $MaxLine: a reader that waits for the end of such a line would hold it all in memory.
+function Read-Lines([string]$id, $p, [int]$n) {
+    $start = 0
+    while (($nl = [Array]::IndexOf($p.buf, [byte]10, $start, $n - $start)) -ge 0) {
+        $p.acc.Write($p.buf, $start, $nl - $start)
+        $line = $utf8.GetString($p.acc.GetBuffer(), 0, [int]$p.acc.Length).TrimEnd("`r")
+        $p.acc.SetLength(0)
+        $start = $nl + 1
+        Send-Lua @('in', $id, $line)
+    }
+    $p.acc.Write($p.buf, $start, $n - $start)
+    $p.acc.Length -le $MaxLine
 }
 
 if ($Mode -eq 'host') {
@@ -85,7 +101,11 @@ while ($true) {
         $line = $mpvTask.Result
         $mpvTask = $mpvIn.ReadLineAsync()
         # Cheap pre-filter: mpv sends every property/event to IPC clients.
-        if ($line.Contains('watch-together-out')) {
+        if ($line.Contains('watch-together-close')) {
+            # The host drops an old connection of a guest who has already come back on a new one.
+            $ev = ConvertFrom-Json $line
+            if ($ev.event -eq 'client-message' -and $ev.args[0] -eq 'watch-together-close') { Close-Peer ([string]$ev.args[1]) }
+        } elseif ($line.Contains('watch-together-out')) {
             $ev = ConvertFrom-Json $line
             if ($ev.event -eq 'client-message' -and $ev.args[0] -eq 'watch-together-out') {
                 $target = [string]$ev.args[1]
@@ -113,13 +133,12 @@ while ($true) {
     foreach ($id in @($peers.Keys)) {
         $p = $peers[$id]
         if (-not $p.t.IsCompleted) { continue }
-        $line = if ($p.t.IsFaulted) { $null } else { $p.t.Result }
-        if ($null -eq $line) {
+        $n = if ($p.t.Status -eq 'RanToCompletion') { $p.t.Result } else { 0 }
+        if ($n -le 0 -or -not (Read-Lines $id $p $n)) {
             Close-Peer $id
             $retryAt = [DateTime]::Now.AddSeconds(2)
         } else {
-            $p.t = $p.r.ReadLineAsync()
-            if ($line.Length -le $MaxLine) { Send-Lua @('in', $id, $line) }
+            $p.t = $p.s.ReadAsync($p.buf, 0, $p.buf.Length)
         }
     }
 }

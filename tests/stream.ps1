@@ -1,5 +1,6 @@
 # stream.ps1 against share.ps1 without a room: byte ranges must come back identical, also past 4 GB.
 # Uses a 50 MB random file and a sparse 5 GB file with markers (no real disk space), both in %TEMP%.
+# Last, a relay that cuts every connection after 700 KB stands in for a tunnel that drops them.
 # Usage: powershell -ExecutionPolicy Bypass -File tests\stream.ps1 -Mpv C:\path\mpv.exe
 param([string]$Mpv = 'mpv', [int]$SharePort = 47886)
 $ErrorActionPreference = 'Stop'
@@ -36,6 +37,7 @@ function Expected-Big([int64]$from, [int]$n) {
 }
 
 $pipe = 'wt-stream-test'
+$relay = Join-Path $env:TEMP ('wt-relay-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
 $p = Start-Process $Mpv -PassThru -WindowStyle Hidden -ArgumentList @('--no-config', '--idle=yes', '--vo=null', '--ao=null', "--input-ipc-server=$pipe")
 $procs = @($p)
 try {
@@ -87,8 +89,59 @@ try {
         if (-not ($r.data.Length -ge [Math]::Min([int64]3000000, 5GB - $from) -and $r.len -eq 5GB - $from -and [Linq.Enumerable]::SequenceEqual([byte[]]$r.data, [byte[]]$exp))) { $bad += $from }
     }
     Check 'ranges of a 5 GB file are identical, past 2 and 4 GB too' ($bad.Count -eq 0) ($bad -join ', ')
+
+    # A tunnel that drops connections: a relay cuts each one after 700 KB, so every 2 MB piece breaks
+    # twice and stream.ps1 has to ask for the rest of it again.
+    Set-Content -Encoding ascii $relay @'
+param([int]$Listen, [int]$Target, [int]$Limit)
+$l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Listen); $l.Start()
+$conns = New-Object System.Collections.ArrayList
+$accept = $l.AcceptTcpClientAsync()
+while ($true) {
+    $tasks = @($accept); foreach ($x in $conns) { $tasks += $x.up; $tasks += $x.down }
+    [void][System.Threading.Tasks.Task]::WaitAny([System.Threading.Tasks.Task[]]$tasks, 1000)
+    if ($accept.IsCompleted) {
+        $c = $accept.Result; $accept = $l.AcceptTcpClientAsync()
+        $s = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $Target)
+        $x = @{ c = $c; s = $s; cs = $c.GetStream(); ss = $s.GetStream(); ub = (New-Object byte[] 65536); db = (New-Object byte[] 65536); sent = 0 }
+        $x.up = $x.cs.ReadAsync($x.ub, 0, 65536); $x.down = $x.ss.ReadAsync($x.db, 0, 65536)
+        [void]$conns.Add($x)
+    }
+    foreach ($x in @($conns)) {
+        $done = $false
+        if ($x.up.IsCompleted) {
+            $n = if ($x.up.Status -eq 'RanToCompletion') { $x.up.Result } else { 0 }
+            if ($n -le 0) { $done = $true } else { $x.ss.Write($x.ub, 0, $n); $x.up = $x.cs.ReadAsync($x.ub, 0, 65536) }
+        }
+        if (-not $done -and $x.down.IsCompleted) {
+            $n = if ($x.down.Status -eq 'RanToCompletion') { $x.down.Result } else { 0 }
+            $n = [Math]::Min([int64]$n, $Limit - $x.sent)
+            if ($n -gt 0) { try { $x.cs.Write($x.db, 0, $n) } catch { $done = $true }; $x.sent += $n }
+            if ($n -le 0 -or $x.sent -ge $Limit) { $done = $true } else { $x.down = $x.ss.ReadAsync($x.db, 0, 65536) }
+        }
+        if ($done) { $x.c.Close(); $x.s.Close(); $conns.Remove($x) }
+    }
+}
+'@
+    $procs += Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList ($ps + @("`"$relay`"", '-Listen', ($SharePort + 1), '-Target', $SharePort, '-Limit', 700000))
+    $st2 = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList ($ps + @("`"$plugin\stream.ps1`"", '-Pipe', $pipe, '-Script', 'none', '-Address', '127.0.0.1', '-Port', ($SharePort + 1)))
+    $procs += $st2
+    $port = $null
+    for ($i = 0; $i -lt 50 -and -not $port; $i++) {
+        Start-Sleep -Milliseconds 200
+        $port = (Get-NetTCPConnection -OwningProcess $st2.Id -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).LocalPort
+    }
+    $bad = @()
+    foreach ($from in @(0, 1234567, ($orig.Length - 3000000))) {
+        $r = try { Get-Range (Split-Path $small -Leaf) $from ([int]::MaxValue) } catch { $null }
+        $start = [Math]::Max([int64]$from, 0)
+        if (-not ($r -and $r.data.Length -eq $orig.Length - $start -and
+                  [Linq.Enumerable]::SequenceEqual([byte[]]$r.data, [byte[]]$orig[$start..($orig.Length - 1)]))) { $bad += $from }
+    }
+    Check 'connections cut every 700 KB: the whole file still arrives identical' ($bad.Count -eq 0) ($bad -join ', ')
 } finally {
     $procs | ForEach-Object { if (-not $_.HasExited) { $_.Kill() } }
+    Remove-Item -Force $relay -ErrorAction SilentlyContinue
 }
 if ($failures) { Write-Host "$failures check(s) failed"; exit 1 }
 Write-Host 'All checks passed'

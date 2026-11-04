@@ -80,6 +80,49 @@ try {
     $ok = Wait-Until { (I $b @('get_property', 'user-data/watch-together/status')) -eq 'connected' } 10
     Check 'connect' $ok ''
 
+    # A guest back on a new connection while its old one still hangs open (a tunnel can keep it for a
+    # while) keeps its name; another player with the same name still gets a unique one.
+    function Open-Raw([string]$cid) {
+        $c = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $Port)
+        $req = $utf8.GetBytes((ConvertTo-Json -Compress @{ t = 'hello'; v = 2; name = 'Kio'; cid = $cid }) + "`n")
+        $c.GetStream().Write($req, 0, $req.Length)
+        $c
+    }
+    function Names { @((I $a @('get_property', 'user-data/watch-together/room')).members | ForEach-Object { $_.name }) }
+    $raw = @(Open-Raw 'abc123')
+    Start-Sleep -Milliseconds 800
+    $raw += Open-Raw 'abc123'
+    $raw += Open-Raw 'def456'
+    Start-Sleep 2.5  # all three hellos handled and the room list published twice: judge the settled state
+    $n = Names
+    $ok = $n.Count -eq 4 -and @($n | Where-Object { $_ -eq 'Kio' }).Count -eq 1 -and @($n | Where-Object { $_ -like 'Kio (p*)' }).Count -eq 1
+    Check 'a returning guest keeps its name, a namesake gets a unique one' $ok ($n -join ', ')
+    # True when the host closes the connection within a few seconds; it keeps sending until then.
+    function Wait-Closed($stream) {
+        $stream.ReadTimeout = 1000
+        $buf = New-Object byte[] 65536
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        while ($clock.Elapsed.TotalSeconds -lt 4) {
+            try { if ($stream.Read($buf, 0, $buf.Length) -le 0) { return $true } } catch [IO.IOException] {
+                if ($_.Exception.InnerException -isnot [Net.Sockets.SocketException] -or $_.Exception.InnerException.SocketErrorCode -ne 'TimedOut') { return $true }
+            }
+        }
+        $false
+    }
+    Check 'the old connection is closed by the host' (Wait-Closed $raw[0].GetStream()) ''
+    $raw | ForEach-Object { $_.Close() }
+    [void](Wait-Until { (Names).Count -eq 2 } 5)
+
+    # A peer that sends an endless line is dropped before it fills the host's memory; the room goes on.
+    $flood = Open-Raw 'f00d'
+    $s = $flood.GetStream()
+    $junk = New-Object byte[] 65536; for ($i = 0; $i -lt $junk.Length; $i++) { $junk[$i] = 120 }
+    $cut = $false
+    try { for ($i = 0; $i -lt 20; $i++) { $s.Write($junk, 0, $junk.Length) }; $cut = Wait-Closed $s } catch { $cut = $true }
+    $flood.Close()
+    $ok = $cut -and (Wait-Until { (Names).Count -eq 2 -and (I $b @('get_property', 'user-data/watch-together/status')) -eq 'connected' } 5)
+    Check 'a line over 1 MB drops that peer, the room goes on' $ok ((Names) -join ', ')
+
     # The share port serves playlist files only.
     $denied = @('..\..\Windows\win.ini', 'watch-together-rate.txt', 'C:\Windows\win.ini') | ForEach-Object { Ask-Share $_ }
     Check 'files outside the playlist are refused' (-not ($denied | Where-Object { $_ -notmatch 'not shared' })) ($denied -join ' | ')
@@ -151,6 +194,8 @@ try {
     $hist = Get-Content -Raw (Join-Path $cfgA 'watch_together_history.json') | ConvertFrom-Json
     $entry = $hist.PSObject.Properties | Select-Object -First 1
     Check 'history saved on leave' ($entry.Value.file -eq 'watch-together-ep2.mkv' -and [math]::Abs($entry.Value.pos - 121) -lt 3) ("{0} @ {1:N0}" -f $entry.Value.file, $entry.Value.pos)
+    $tmp = @(Get-ChildItem $cfgA, $cfgB -Filter '*.tmp')
+    Check 'state files written through .tmp, none left over' ($tmp.Count -eq 0) ($tmp.Name -join ', ')
     $null = I $a @('playlist-prev')
     [void](Wait-Until { (I $a @('get_property', 'filename')) -eq 'watch-together-ep1.mkv' } 5)
     $null = I $a @('script-message', 'watch-together-host')
@@ -160,7 +205,12 @@ try {
     $ok = Wait-Until { (I $a @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and [math]::Abs((I $a @('get_property', 'time-pos')) - 121) -lt 5 } 8
     Check 'accepting it opens episode 2 at the remembered time' $ok ("{0} @ {1:N0}" -f (I $a @('get_property', 'filename')), (I $a @('get_property', 'time-pos')))
 } finally {
-    $procs | ForEach-Object { if (-not $_.HasExited) { $_.Kill() } }
+    $procs | ForEach-Object { if (-not $_.HasExited) { $_.Kill(); [void]$_.WaitForExit(3000) } }
+    # The plugin's helpers exit a moment after mpv and may still hold a file there.
+    for ($i = 0; $i -lt 10 -and (Test-Path $run); $i++) {
+        Remove-Item -Recurse -Force $run -ErrorAction SilentlyContinue
+        if (Test-Path $run) { Start-Sleep -Milliseconds 500 }
+    }
 }
 $litter = @(Get-ChildItem (Split-Path $PSScriptRoot) -Recurse -Filter 'watch_together_*.json' -ErrorAction SilentlyContinue)
 Check 'nothing written into the project folder' ($litter.Count -eq 0) ($litter.FullName -join ', ')

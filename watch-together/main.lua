@@ -49,6 +49,25 @@ local function state_file(name)
     return nil
 end
 
+-- Through a .tmp file: mpv killed in the middle of a write must not leave an empty file behind.
+-- Windows' rename does not replace, so the old file goes first; reading falls back to the .tmp.
+local function write_state(path, text)
+    local f = io.open(path .. ".tmp", "w")
+    if not f then return end
+    f:write(text)
+    f:close()
+    os.remove(path)
+    os.rename(path .. ".tmp", path)
+end
+
+local function read_state(path)
+    local f = io.open(path, "r") or io.open(path .. ".tmp", "r")
+    if not f then return nil end
+    local data = utils.parse_json(f:read("*a") or "")
+    f:close()
+    return type(data) == "table" and data or nil
+end
+
 -- Toggles from the Settings menu override the conf file and survive restarts.
 local SETTINGS_FILE = state_file("watch_together_settings.json")
 local settings = {
@@ -58,22 +77,23 @@ local settings = {
     share_files = o.share_files,
     soft_sync = o.soft_sync,
     download_to = "video",  -- guest: "video" (the open video's folder) | "downloads"
+    cid = "",               -- this player's id in rooms: a guest who comes back replaces its old connection
 }
-do
-    local f = SETTINGS_FILE and io.open(SETTINGS_FILE, "r")
-    if f then
-        local saved = utils.parse_json(f:read("*a") or "")
-        f:close()
-        for k, v in pairs(type(saved) == "table" and saved or {}) do
-            if type(settings[k]) == type(v) then settings[k] = v end
-        end
-        if settings.download_to ~= "downloads" then settings.download_to = "video" end
-    end
+for k, v in pairs(SETTINGS_FILE and read_state(SETTINGS_FILE) or {}) do
+    if type(settings[k]) == type(v) then settings[k] = v end
 end
+if settings.download_to ~= "downloads" then settings.download_to = "video" end
 
 local function save_settings()
-    local f = SETTINGS_FILE and io.open(SETTINGS_FILE, "w")
-    if f then f:write(utils.format_json(settings)) f:close() end
+    if SETTINGS_FILE then write_state(SETTINGS_FILE, utils.format_json(settings)) end
+end
+
+-- Without a config folder (tests) every player gets a new id, so several on one PC stay apart.
+if not settings.cid:match("^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$") then
+    -- Kept under 2^31: Lua 5.1 turns the seed into a C int.
+    math.randomseed((os.time() + (mp.get_property_number("pid") or 0) * 7919 + math.floor(mp.get_time() * 1e6)) % 2147483647)
+    settings.cid = string.format("%08x%08x", math.random(0, 0x7fffffff), math.random(0, 0x7fffffff))
+    save_settings()
 end
 
 local STRINGS = {
@@ -881,6 +901,15 @@ local function on_guest_message(id, m)
     if m.t == "req" then mp.msg.debug(string.format("req from %s: %s pos=%s paused=%s", g.name, tostring(m.ev), tostring(m.pos), tostring(m.paused))) end
 
     if m.t == "hello" then
+        -- The same player again: its old connection is dead but not closed yet (a tunnel can keep it
+        -- for a while). Drop it silently, or this guest would come back as "name (p2)".
+        g.cid = type(m.cid) == "string" and m.cid:match("^%x+$") and m.cid:sub(1, 32) or nil
+        for other_id, other in pairs(members) do
+            if g.cid and other_id ~= id and other.cid == g.cid then
+                members[other_id] = nil
+                mp.commandv("script-message", "watch-together-close", other_id)
+            end
+        end
         local name = type(m.name) == "string" and m.name:sub(1, 32) or id
         for other_id, other in pairs(members) do
             if other_id ~= id and other.name == name then name = name .. " (" .. id .. ")" end
@@ -1201,7 +1230,7 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
             last_rx = mp.get_time()
             set_status("connected")
             osd(T("in_room"))
-            send("host", { t = "hello", v = PROTOCOL, name = my_name })
+            send("host", { t = "hello", v = PROTOCOL, name = my_name, cid = settings.cid })
             if my_wait then report_wait() end
         end
     elseif kind == "disconnected" then
@@ -1319,11 +1348,7 @@ end
 
 local function load_history()
     if not HISTORY_FILE then return history_mem end
-    local f = io.open(HISTORY_FILE, "r")
-    if not f then return {} end
-    local h = utils.parse_json(f:read("*a") or "")
-    f:close()
-    return type(h) == "table" and h or {}
+    return read_state(HISTORY_FILE) or {}
 end
 
 function remember()
@@ -1338,8 +1363,7 @@ function remember()
     table.sort(keys, function(x, y) return h[x].t > h[y].t end)
     for i = 51, #keys do h[keys[i]] = nil end
     if not HISTORY_FILE then history_mem = h return end
-    local f = io.open(HISTORY_FILE, "w")
-    if f then f:write(utils.format_json(h)) f:close() end
+    write_state(HISTORY_FILE, utils.format_json(h))
 end
 
 local function resume_to(e)

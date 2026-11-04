@@ -15,7 +15,8 @@ tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
 tests/slow_server.py        throttled HTTP file server for buffering.ps1
 tests/features.ps1          settings, watching from host, downloads, countdown, resume memory (own config folders in %TEMP%)
-tests/stream.ps1            stream.ps1 + share.ps1 without a room: byte ranges of a 50 MB and a sparse 5 GB file
+tests/stream.ps1            stream.ps1 + share.ps1 without a room: byte ranges of a 50 MB and a sparse 5 GB file, and through a relay that cuts every connection after 700 KB
+tests/update.ps1            manual, needs the network: update.ps1 check and install against the real releases
 tests/speed.ps1             manual: download speed from a host's share port with 1, 2, 4, 8 connections
 install.bat, uninstall.bat
 ```
@@ -26,7 +27,7 @@ install.bat, uninstall.bat
 2. `main.lua` makes sure `input-ipc-server` is set (`mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with an async `subprocess` (`playback_only=false`). Aborting that command kills the bridge.
 3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`.
 4. Lua to bridge: broadcast `script-message watch-together-out <target> <json>`, where target is a peer id or `*` (all peers). The bridge sees it as an IPC `client-message`.
-5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. A peer write blocked for 5 s (`SendTimeout`) closes that peer. The host refuses connections beyond `-MaxPeers` (`max_guests`). Lines over 1 MB are dropped.
+5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. A peer write blocked for 5 s (`SendTimeout`) closes that peer. The host refuses connections beyond `-MaxPeers` (`max_guests`). The bridge reads raw bytes and splits lines itself: a peer whose line passes 1 MB is closed, so an endless line cannot fill the host's memory. `script-message watch-together-close <id>` closes one peer.
 
 ## Protocol (version 2, newline-delimited JSON)
 
@@ -36,7 +37,7 @@ Guest to host:
 
 | `t` | fields | meaning |
 |---|---|---|
-| `hello` | `v`, `name` | first message; `v` must be 2 |
+| `hello` | `v`, `name`, `cid` | first message; `v` must be 2. `cid` is the player's id (16 hex digits in `settings`, a new one per run without a config folder). A hello whose `cid` is already in the room replaces that member: the host drops the old entry without a "left" notice and closes its connection, so a guest who comes back keeps its name |
 | `req` | `ev`, `pos`, `paused`, `speed`, `dur`, `file`, `pl` | a local user action: `ev` is `pause`, `seek`, `speed` or `file` |
 | `status` | `file`, `pos`, `paused`, `rtt` | every second, for the member list |
 | `wait` | `reason` (`buffering`, `loading` or empty) | sent when this player starts or stops waiting |
@@ -126,6 +127,8 @@ Last run: 8/8. Screenshots checked: the host sees "Ждём: Аня (буфер�
 ### Settings and state files
 
 `settings` (`soft_sync`, `wait_for_others`, `countdown`, `resume_memory`, `share_files`) start from the conf options, and are then overridden by `~~/watch_together_settings.json`, which the menu toggles write. `state_file()` returns nil when `~~/` does not expand to an absolute path: with `--no-config` it becomes a bare relative name. Then settings and history stay in memory, so test runs never write into the folder mpv was started from.
+
+Both files are written by `write_state()`: the text goes to `<file>.tmp`, then the old file is removed and the `.tmp` renamed (Windows' rename does not replace). `read_state()` falls back to the `.tmp` when the file is missing, which covers a crash between the two steps. `settings.cid`, the player's room id, is generated once and saved with the settings.
 
 ### Episode sharing
 
