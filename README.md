@@ -51,7 +51,7 @@ Pause, play, seeking, speed and episode changes reach everyone, whoever makes th
 
 When someone switches episodes, the others open the file with the same name from their playlist, or the one at the same playlist position if the names differ (different releases of a show, for example). Files are compared by duration: if yours differs from the host's by more than a second, the script warns you and stops syncing until you are on the same file.
 
-The host decides under Who can pause and seek (Кто может ставить паузу и перематывать). Everyone (Все) means anyone can pause, seek, change speed or switch episodes. Only me (Только я) means the guests just watch: a guest who tries any of that is put back to where the host is, with a message saying why.
+The host decides under Room settings (Настройки комнаты). Everyone (Все) means anyone can pause, seek, change speed or switch episodes. Only me (Только я) means the guests just watch: a guest who tries any of that is put back to where the host is, with a message saying why.
 
 If someone's player stalls, the room waits for them. That happens when a player is buffering (a stream or a slow network drive can't keep up) or still opening the file after an episode change. Everyone's player pauses, and everyone sees whom the room is waiting for and why, for example "Waiting for: Alex (buffering)" ("Ждём: Alex (буферизация)"); the person it waits for sees "you". Pressing play meanwhile is remembered but not done. Once everyone is ready, playback resumes for all at the same spot. Short stalls under half a second are ignored. After 30 seconds the room gives up on that person and plays on, saying so.
 
@@ -61,13 +61,13 @@ When the host opens a room in a folder the group watched before, mpv asks "Conti
 
 The host can turn off the countdown, resume memory, episode sharing and waiting for stalled members under Settings (Настройки), When you host (Когда ты хост). The choices are kept between sessions.
 
-The menu lists the members with their files, and Show friends' time on screen (Показывать время друзей на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
+The menu lists the members with their files, and Friends' time on screen (Время друзей на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
 
 ## Episodes a guest doesn't have
 
 A guest can download an episode the host has or watch it straight from the host. Both use the second port, 47801, which the host shares in Porthole next to 47800. The host shares only the files in its mpv playlist and nothing else on its disk, so if your friends need the whole season, open the whole season folder in mpv.
 
-Download episodes from host (Скачать серии у хоста) gets one episode or all missing ones. The file goes into the folder of the video you have open, next to your other episodes, and joins the playlist. An interrupted download continues where it stopped. Under Where to save episodes (Куда сохранять серии) in the same submenu you can switch to your Downloads folder instead.
+Download episodes (Скачать серии) gets one episode or all missing ones. The file goes into the folder of the video you have open, next to your other episodes, and joins the playlist. An interrupted download continues where it stopped. Under Where to save (Куда сохранять) in the same submenu you can switch to your Downloads folder instead.
 
 Watch online (Смотреть онлайн, the first item of the menu for a guest) adds the host's episodes you lack to your playlist. They play straight from the host and are never saved to disk. You follow the host to these episodes as you would to your own files, and an episode you do have plays from your copy.
 
@@ -124,7 +124,7 @@ auto_update=yes     # check GitHub releases when mpv starts
 
 The on/off settings from the menu are stored in `%APPDATA%\mpv\watch_together_settings.json` and take priority over this file. Resume points are in `watch_together_history.json` in the same folder.
 
-Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). Set `bind=0.0.0.0` on the host. The host chooses Copy invite for friends (Скопировать приглашение для друзей) and sends the copied text, for example `100.64.0.5:47800`, to the guests. Each guest copies it and chooses Join by copied address (Подключиться по скопированному адресу). The script picks a Tailscale address first, then a home network one. With Porthole the copied address is `127.0.0.1:<port>`, which is what Join a friend uses anyway.
+Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). Set `bind=0.0.0.0` on the host. The host chooses Copy invite (Скопировать приглашение) and sends the copied text, for example `100.64.0.5:47800`, to the guests. Each guest copies it and chooses Join by copied address (Подключиться по скопированному адресу). The script picks a Tailscale address first, then a home network one. With Porthole the copied address is `127.0.0.1:<port>`, which is what Join a friend uses anyway.
 
 ## How it works
 

@@ -146,7 +146,7 @@ With `length` in the request (a piece for `stream.ps1`), the host reads exactly 
 The guest menu lists host names that are neither in the guest's playlist nor in `download_dir()`:
 
 - `download_dir` option if set;
-- else, with `settings.download_to = "video"` (default, menu "Where to save episodes"), the current local file's folder;
+- else, with `settings.download_to = "video"` (default, menu "Where to save"), the current local file's folder;
 - else the Downloads folder: the real one from `sysinfo.ps1` (`shell:Downloads`, it can be moved), `%USERPROFILE%\Downloads` until that answer arrives.
 
 Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. It never replaces an existing file: the target folder is chosen when each download starts and can change while a queue runs. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
