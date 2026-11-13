@@ -40,7 +40,7 @@ Everyone ends up in the last state the host broadcast. The host sends `tick` eve
 
 Cost: the host's upload grows with the guests (tick + room list per guest per second, about 0.3–3 KB each). Measured with 20 guests on one PC: host bridge about 2.5% of one core.
 
-## "Only me" control is enforced by guests and the host
+## "Only the host controls" is enforced by guests and the host
 
 The host refuses requests with `control=host` and answers with `sync`. Guests know the mode from the `room` message, so they revert locally right away instead of waiting for the refusal. That makes a forbidden pause blink for a moment instead of playing on for a round trip.
 
