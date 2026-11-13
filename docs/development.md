@@ -146,14 +146,14 @@ With `length` in the request (a piece for `stream.ps1`), the host reads exactly 
 The guest menu lists host names that are neither in the guest's playlist nor in `download_dir()`:
 
 - `download_dir` option if set;
-- else, with `settings.download_to = "video"` (default, menu "Save to"), the current local file's folder;
+- else, with `settings.download_to = "video"` (default, menu "Where to save episodes"), the current local file's folder;
 - else the Downloads folder: the real one from `sysinfo.ps1` (`shell:Downloads`, it can be moved), `%USERPROFILE%\Downloads` until that answer arrives.
 
 Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and continues an existing one when the host accepts the offset, then renames the file and reports `done`. It never replaces an existing file: the target folder is chosen when each download starts and can change while a queue runs. `main.lua` then appends the file to the playlist and follows the room if it is on that file. Progress comes as `progress` script messages every second. Names from the host pass `safe_name()` before they become paths.
 
 ### Watching from the host
 
-"Watch from host without downloading" (guest menu) starts `stream.ps1`. It listens on a free port of 127.0.0.1 and reports `ready <port>`; `main.lua` then appends `http://127.0.0.1:<port>/<percent-encoded name>` for every host file not in the playlist, and `follow_file` finds them by name like local files (`basename` decodes URLs, a local copy wins over a stream). mpv's `filename` of such a URL is the decoded name, so status, sync and history see the host's file name.
+"Watch online" (guest menu, first item) starts `stream.ps1`. It listens on a free port of 127.0.0.1 and reports `ready <port>`; `main.lua` then appends `http://127.0.0.1:<port>/<percent-encoded name>` for every host file not in the playlist, and `follow_file` finds them by name like local files (`basename` decodes URLs, a local copy wins over a stream). mpv's `filename` of such a URL is the decoded name, so status, sync and history see the host's file name.
 
 `stream.ps1` answers one mpv request at a time; a new one (a seek) drops the old. It fetches 2 MB pieces with `length` over 4 connections at once and sends them to mpv in order; the first piece goes to mpv as it arrives. A piece whose connection breaks is asked for again from where it stopped, up to 3 times. Turning it off, leaving or losing the room stops `stream.ps1` and removes the stream entries.
 
@@ -201,7 +201,7 @@ Invite address (host only): with `bind` other than `0.0.0.0`, the clipboard gets
 
 The text is written to `clipboard/text`. e2e checks the `127.0.0.1` case and restores the user's clipboard. The `0.0.0.0` path is checked piecewise (address listing on a real PC, ranking on sample sets), not end to end, because hosting on all interfaces would open a firewall prompt.
 
-The menu entry is found by its `watch-together-leave` command, not by its title. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines). The overlay is anchored top right (`\an9\pos(res_x-20, 50)`, `res_y` 720, `res_x` from the OSD aspect), with names cut to 20 and files to 28 characters. The top left belongs to mpv's own messages (our notices, volume, seek time, stats), and y=50 keeps it below the fullscreen window buttons. Checked with screenshots: notice + panel, stats + panel, and a 640×480 window.
+The menu entry is found by its `watch-together-update` / `watch-together-install` command (always one of them), not by its title and not by `leave`, which is hidden outside a room. Buttons that cannot be pressed now are left out, not greyed: create / join only outside a room, leave only in one. Info lines (status, members, version) stay as disabled items. Button titles carry no details in parentheses and are written for people who have never seen the plugin. Member positions are not shown in the menu: writing `menu-data` makes mpv delete and rebuild every native menu item, even while the menu is open. Live times go to an ASS overlay (`show_panel`, max 20 lines). The overlay is anchored top right (`\an9\pos(res_x-20, 50)`, `res_y` 720, `res_x` from the OSD aspect), with names cut to 20 and files to 28 characters. The top left belongs to mpv's own messages (our notices, volume, seek time, stats), and y=50 keeps it below the fullscreen window buttons. Checked with screenshots: notice + panel, stats + panel, and a 640×480 window.
 
 ## Updates
 

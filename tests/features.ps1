@@ -141,6 +141,24 @@ try {
     $denied = @('..\..\Windows\win.ini', 'watch-together-rate.txt', 'C:\Windows\win.ini') | ForEach-Object { Ask-Share $_ }
     Check 'files outside the playlist are refused' (-not ($denied | Where-Object { $_ -notmatch 'not shared' })) ($denied -join ' | ')
 
+    # The menu: one entry of ours, "Watch online" first for a guest, only buttons that can be pressed now, no (details) in titles.
+    function Our-Menu($ipc) {
+        @(I $ipc @('get_property', 'menu-data')) | Where-Object { $_.submenu -and ($_.submenu | Where-Object { $_.cmd -match 'watch-together-(update|install)' }) }
+    }
+    function Cmds($menu) { @($menu.submenu | ForEach-Object { $_.cmd }) }
+    $mb = Our-Menu $b; $ma = Our-Menu $a
+    $parens = @($mb.submenu + $ma.submenu | Where-Object { $_.cmd -and $_.title -match '\(' })
+    $ok = @($mb).Count -eq 1 -and $mb.submenu[0].cmd -match 'stream-toggle' -and (Cmds $mb) -contains 'script-message watch-together-leave' `
+        -and -not ((Cmds $mb) -match 'watch-together-(host|join)') -and $parens.Count -eq 0
+    Check 'menu in a room: Watch online first, only Leave, no (details)' $ok (($mb.submenu | ForEach-Object { $_.title }) -join ' / ')
+    $null = I $b @('script-message', 'watch-together-leave'); Start-Sleep -Milliseconds 800
+    $mb = Our-Menu $b
+    $ok = @($mb).Count -eq 1 -and (Cmds $mb) -contains 'script-message watch-together-join' -and -not ((Cmds $mb) -match 'leave|stream-toggle')
+    Check 'menu outside a room: Create / Join, no Leave' $ok (($mb.submenu | ForEach-Object { $_.title }) -join ' / ')
+    $null = I $b @('script-message', 'watch-together-join')
+    [void](Wait-Until { (I $b @('get_property', 'user-data/watch-together/status')) -eq 'connected' } 10)
+    Start-Sleep 1.5  # the host's file list reaches the guest
+
     # Watching from the host: B lacks episode 2 and plays it from A through stream.ps1.
     $null = I $b @('script-message', 'watch-together-stream-toggle')
     $ok = Wait-Until { (I $b @('get_property', 'playlist-count')) -eq 2 } 10

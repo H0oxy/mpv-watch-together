@@ -107,23 +107,23 @@ local STRINGS = {
         connected = "в комнате",
         lost = "хост не отвечает",
         you = "У тебя: %s",
-        members = "Участники (%d)",
+        members = "Участники",
         host_tag = "хост",
         stale_tag = "не отвечает",
         paused_tag = "пауза",
-        show_times = "Время участников на экране",
-        control = "Кто управляет просмотром",
-        control_all = "Все: любой может ставить паузу, перематывать, менять скорость и серию",
-        control_host = "Только я: гости смотрят, управляет хост",
-        copy_invite = "Скопировать адрес приглашения",
-        invite_copied = "Скопировано: %s\nДрузья выбирают «Подключиться к адресу из буфера обмена»",
+        show_times = "Показывать время друзей на экране",
+        control = "Кто может ставить паузу и перематывать",
+        control_all = "Все",
+        control_host = "Только я",
+        copy_invite = "Скопировать приглашение для друзей",
+        invite_copied = "Скопировано: %s\nДрузья выбирают «Подключиться по скопированному адресу»",
         no_address = "Не удалось узнать адрес этого компьютера",
         control_is = "Управляет просмотром: %s",
         control_all_short = "все участники",
         control_host_short = "только хост",
-        host = "Создать комнату (порт %d)",
-        join = "Подключиться к другу (Porthole)",
-        join_clipboard = "Подключиться к адресу из буфера обмена",
+        host = "Создать комнату",
+        join = "Подключиться к другу",
+        join_clipboard = "Подключиться по скопированному адресу",
         leave = "Выйти из комнаты",
         version = "Версия %s",
         check_update = "Проверить обновления",
@@ -163,12 +163,12 @@ local STRINGS = {
         all_ready = "Все готовы, продолжаем",
         gave_up = "Не дождались: %s, продолжаем",
         settings = "Настройки",
-        set_soft = "Догонять комнату плавно (скоростью), без перемотки",
-        when_host = "Когда ты хост:",
-        set_wait = "Ждать тех, у кого буферизация или загрузка файла",
-        set_countdown = "Отсчёт %d с перед следующей серией",
-        set_resume = "Предлагать продолжить с места остановки",
-        set_share = "Разрешить гостям скачивать у меня серии (порт %d)",
+        set_soft = "Подгонять плавно, без рывков",
+        when_host = "Если ты создал комнату:",
+        set_wait = "Ждать друзей, у которых тормозит видео",
+        set_countdown = "Перед следующей серией ждать %d с",
+        set_resume = "Предлагать продолжить с того же места",
+        set_share = "Разрешить друзьям скачивать серии у меня",
         setting_on = "Включено: %s",
         setting_off = "Выключено: %s",
         countdown = "Следующая серия через %d с\nПробел: подождать",
@@ -176,8 +176,8 @@ local STRINGS = {
         you_self = "ты",
         go = "Поехали!",
         resume_prompt = "Продолжить с %s, %s?",
-        download_menu = "Скачать у хоста",
-        download_all = "Все недостающие (%d)",
+        download_menu = "Скачать серии у хоста",
+        download_all = "Все, которых у тебя нет",
         download_none = "Все серии хоста у тебя уже есть",
         downloading = "Скачивается: %s",
         download_cancel = "Отменить загрузку",
@@ -187,14 +187,14 @@ local STRINGS = {
         dl_hint = "Проверь, что хост добавил порт %d в лобби Porthole",
         share_sending = "%s скачивает %s",
         share_watching = "%s смотрит у тебя %s",
-        stream_menu = "Смотреть с хоста без скачивания",
+        stream_menu = "Смотреть онлайн",
         stream_on = "Серии хоста, которых у тебя нет, добавлены в плейлист и будут играть с хоста",
         stream_off = "Просмотр с хоста выключен",
         stream_failed = "Просмотр с хоста: %s",
         mb = "%.0f МБ",
-        save_to = "Куда сохранять",
-        save_video = "В папку открытого видео",
-        save_downloads = "В «Загрузки»",
+        save_to = "Куда сохранять серии",
+        save_video = "Рядом с этим видео",
+        save_downloads = "В папку «Загрузки»",
         save_to_set = "Серии будут сохраняться: %s",
         more = "…и ещё %d",
     },
@@ -208,23 +208,23 @@ local STRINGS = {
         connected = "in the room",
         lost = "host not responding",
         you = "You: %s",
-        members = "Members (%d)",
+        members = "Members",
         host_tag = "host",
         stale_tag = "not responding",
         paused_tag = "paused",
-        show_times = "Show members' time on screen",
-        control = "Who controls playback",
-        control_all = "Everyone: anyone can pause, seek, change speed or episode",
-        control_host = "Only me: guests watch, the host controls",
-        copy_invite = "Copy invite address",
-        invite_copied = "Copied: %s\nFriends choose Join address from clipboard",
+        show_times = "Show friends' time on screen",
+        control = "Who can pause and seek",
+        control_all = "Everyone",
+        control_host = "Only me",
+        copy_invite = "Copy invite for friends",
+        invite_copied = "Copied: %s\nFriends choose Join by copied address",
         no_address = "Could not find this PC's address",
         control_is = "Controls playback: %s",
         control_all_short = "everyone",
         control_host_short = "host only",
-        host = "Create room (port %d)",
-        join = "Join friend (Porthole)",
-        join_clipboard = "Join address from clipboard",
+        host = "Create room",
+        join = "Join a friend",
+        join_clipboard = "Join by copied address",
         leave = "Leave room",
         version = "Version %s",
         check_update = "Check for updates",
@@ -264,12 +264,12 @@ local STRINGS = {
         all_ready = "Everyone is ready, playing on",
         gave_up = "Gave up waiting for %s, playing on",
         settings = "Settings",
-        set_soft = "Catch up with the room smoothly (by speed), without jumps",
-        when_host = "When you host:",
-        set_wait = "Wait for anyone buffering or loading a file",
-        set_countdown = "%d s countdown before the next episode",
-        set_resume = "Offer to continue where we stopped",
-        set_share = "Let guests download episodes from me (port %d)",
+        set_soft = "Catch up smoothly, no jumps",
+        when_host = "If you created the room:",
+        set_wait = "Wait for friends whose video is lagging",
+        set_countdown = "Wait %d s before the next episode",
+        set_resume = "Offer to continue from the same place",
+        set_share = "Let friends download episodes from me",
         setting_on = "On: %s",
         setting_off = "Off: %s",
         countdown = "Next episode in %d s\nSpace: wait",
@@ -277,8 +277,8 @@ local STRINGS = {
         you_self = "you",
         go = "Here we go!",
         resume_prompt = "Continue from %s, %s?",
-        download_menu = "Download from host",
-        download_all = "All missing (%d)",
+        download_menu = "Download episodes from host",
+        download_all = "All I don't have",
         download_none = "You already have all the host's episodes",
         downloading = "Downloading: %s",
         download_cancel = "Cancel download",
@@ -288,14 +288,14 @@ local STRINGS = {
         dl_hint = "Check that the host shared port %d in the Porthole lobby",
         share_sending = "%s is downloading %s",
         share_watching = "%s is watching %s from you",
-        stream_menu = "Watch from host without downloading",
+        stream_menu = "Watch online",
         stream_on = "Host episodes you lack are in the playlist and play from the host",
         stream_off = "Watching from host is off",
         stream_failed = "Watching from host: %s",
         mb = "%.0f MB",
-        save_to = "Save to",
-        save_video = "The open video's folder",
-        save_downloads = "Downloads",
+        save_to = "Where to save episodes",
+        save_video = "Next to this video",
+        save_downloads = "Downloads folder",
         save_to_set = "Episodes will be saved to: %s",
         more = "…and %d more",
     },
@@ -537,15 +537,19 @@ local function menu_item()
         return s
     end
     local status_text = status == "hosting" and T("hosting", #(room_info().members) - 1) or T(status)
-    local items = {
-        { title = T("status", status_text), state = { "disabled" } },
-        { title = T("you", menu_name(mp.get_property("filename"))), state = { "disabled" } },
-    }
+    local items = {}
+    -- First, so a guest sees it before anything else.
+    if role == "join" and host_files and #host_files.names > 0 then
+        items[#items + 1] = { title = T("stream_menu"), cmd = "script-message watch-together-stream-toggle", state = st(false, streaming) }
+        items[#items + 1] = { type = "separator" }
+    end
+    items[#items + 1] = { title = T("status", status_text), state = { "disabled" } }
+    items[#items + 1] = { title = T("you", menu_name(mp.get_property("filename"))), state = { "disabled" } }
     local r = current_room()
     if in_room() and r and r.members then
         local sub = {}
         for _, m in ipairs(r.members) do sub[#sub + 1] = { title = menu_name(member_label(m, false)), state = { "disabled" } } end
-        items[#items + 1] = { type = "submenu", title = T("members", #r.members), submenu = sub }
+        items[#items + 1] = { type = "submenu", title = T("members"), submenu = sub }
         items[#items + 1] = { title = T("show_times"), cmd = "script-message watch-together-panel", state = st(false, show_panel) }
     end
     if role == "host" then
@@ -558,7 +562,6 @@ local function menu_item()
         items[#items + 1] = { title = T("control_is", control_text(r.control)), state = { "disabled" } }
     end
     if role == "join" and host_files and #host_files.names > 0 then
-        items[#items + 1] = { title = T("stream_menu"), cmd = "script-message watch-together-stream-toggle", state = st(false, streaming) }
         local sub = {}
         if dl_current then
             sub[#sub + 1] = { title = T("downloading", menu_name(dl_current.name)), state = { "disabled" } }
@@ -569,7 +572,7 @@ local function menu_item()
         if #missing == 0 then
             sub[#sub + 1] = { title = T("download_none"), state = { "disabled" } }
         else
-            sub[#sub + 1] = { title = T("download_all", #missing), cmd = "script-message watch-together-dl-all" }
+            sub[#sub + 1] = { title = T("download_all"), cmd = "script-message watch-together-dl-all" }
             sub[#sub + 1] = { type = "separator" }
             -- By position in the host's list: file names can hold characters that break command parsing.
             for i, name in ipairs(host_files.names) do
@@ -596,15 +599,17 @@ local function menu_item()
         { title = T("set_resume"), cmd = "script-message watch-together-setting resume_memory", state = st(false, settings.resume_memory) },
         { title = T("set_share", o.share_port), cmd = "script-message watch-together-setting share_files", state = st(false, settings.share_files) },
     } }
-    for _, item in ipairs({
-        { type = "separator" },
-        { title = T("host", o.port), cmd = "script-message watch-together-host", state = st(active) },
-        { title = T("join"), cmd = "script-message watch-together-join", state = st(active) },
-        { title = T("join_clipboard"), cmd = "script-message watch-together-join-clipboard", state = st(active) },
-        { title = T("leave"), cmd = "script-message watch-together-leave", state = st(not active) },
-        { type = "separator" },
-        { title = T("version", VERSION), state = { "disabled" } },
-    }) do items[#items + 1] = item end
+    -- Only what can be pressed now: no room yet means create or join, in a room only leave.
+    items[#items + 1] = { type = "separator" }
+    if active then
+        items[#items + 1] = { title = T("leave"), cmd = "script-message watch-together-leave" }
+    else
+        items[#items + 1] = { title = T("host"), cmd = "script-message watch-together-host" }
+        items[#items + 1] = { title = T("join"), cmd = "script-message watch-together-join" }
+        items[#items + 1] = { title = T("join_clipboard"), cmd = "script-message watch-together-join-clipboard" }
+    end
+    items[#items + 1] = { type = "separator" }
+    items[#items + 1] = { title = T("version", VERSION), state = { "disabled" } }
     if update_available then
         items[#items + 1] = { title = T("install_update", update_available), cmd = "script-message watch-together-install" }
     else
@@ -613,10 +618,11 @@ local function menu_item()
     return { type = "submenu", title = T("menu"), submenu = items }
 end
 
--- Found by its commands, not its title: the title changes when the language is detected.
+-- Found by its commands, not its title: the title changes when the language is detected. The
+-- update entry is the one command that is always there (the others come and go with the room).
 local function is_ours(item)
     for _, sub in ipairs(item.submenu or {}) do
-        if sub.cmd == "script-message watch-together-leave" then return true end
+        if sub.cmd == "script-message watch-together-update" or sub.cmd == "script-message watch-together-install" then return true end
     end
     return false
 end
