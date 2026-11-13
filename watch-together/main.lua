@@ -9,7 +9,7 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.5.3"
+local VERSION = "1.5.4"
 local PROTOCOL = 2
 
 local o = {
