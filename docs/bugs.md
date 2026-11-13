@@ -63,6 +63,9 @@ Symptom (seen by the user): the on-screen member list sat on top of other text. 
 ## Players up to 0.3 s apart while paused
 Symptom: the panel showed "+0.3 s" for a paused guest. Cause: the drift threshold was the same while paused as while playing. Fix: about one frame while paused (see development.md, paused precision). Verified: gap 0–0.08 s over 5 pauses with 3 players.
 
+## Panel times a second apart while the drift showed +0.0
+Symptom (real use, screenshot): the members panel showed the host at 0:06:56 and the guest at 0:06:55 (+0.0 s); in a test the guest showed -1.0 s while it really played in sync. Two causes, both display only (guests sync from the host's ticks, not from this list). 1) The guest's time was its raw last status, up to a second old, next to the host's live time-pos; only `off` was projected. 2) `off` was projected from `g.at`, which any message refreshes; the guest sends `ping` just before `status`, so when the host's timer ran between the two, the old position got a fresh timestamp and lost a whole second. Fix: the guest's `pos` in the room list is projected too, from `g.pos_at`, set only by `status`. Verified: features.ps1 "room list time runs on between statuses" (a raw guest sends one status, then only pings) failed with pos 100.07 after 2.5 s and passes with the fix; e2e "member times in the room list agree".
+
 ## Episode switch echo
 Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again, and quick switches could bounce back and forth. Fix: a file change made to follow the room (`expected_switch` matches `playlist-pos`) is not reported as a user action. Verified: e2e "stable: no ping-pong"; episode changes from host and guests.
 

@@ -110,6 +110,11 @@ try {
     $ok = Wait-Until { (Get-Prop $a 'time-pos') -gt 449 -and (Get-Spread $all) -lt 0.3 } 4
     Check 'guest C seek (playing) -> everyone' $ok ("spread={0:N3}s" -f (Get-Spread $all))
 
+    # The members panel shows the host's room list: a guest's time there must be as of the same moment as the host's.
+    function Room-Gap { $t = @((Get-Prop $a 'user-data/watch-together/room').members | ForEach-Object { $_.pos }); ($t | Measure-Object -Maximum).Maximum - ($t | Measure-Object -Minimum).Minimum }
+    $ok = Wait-Until { (Room-Gap) -lt 0.15 } 4
+    Check 'member times in the room list agree' $ok ("gap={0:N3}s" -f (Room-Gap))
+
     Invoke-Mpv $b @('set_property', 'speed', 1.5) | Out-Null
     $ok = Wait-Until { (Get-Prop $a 'speed') -eq 1.5 -and (Near-Speed $c 1.5) } 3
     Check 'guest speed -> everyone' $ok ''

@@ -123,6 +123,20 @@ try {
     $ok = $cut -and (Wait-Until { (Names).Count -eq 2 -and (I $b @('get_property', 'user-data/watch-together/status')) -eq 'connected' } 5)
     Check 'a line over 1 MB drops that peer, the room goes on' $ok ((Names) -join ', ')
 
+    # A guest's time in the room list runs on from its last status. Its pings come just before each
+    # status; when one refreshed the timestamp, the panel showed an in-sync guest a second behind.
+    $probe = Open-Raw 'b0b0'
+    $ps = $probe.GetStream()
+    function Send-Raw($msg) { $l = $utf8.GetBytes((ConvertTo-Json -Compress $msg) + "`n"); $ps.Write($l, 0, $l.Length) }
+    Start-Sleep -Milliseconds 300
+    Send-Raw @{ t = 'status'; file = 'probe.mkv'; pos = 100; paused = $false; rtt = 0 }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.Elapsed.TotalSeconds -lt 2.5) { Send-Raw @{ t = 'ping'; id = 1 }; Start-Sleep -Milliseconds 100 }
+    $pp = ((I $a @('get_property', 'user-data/watch-together/room')).members | Where-Object { $_.file -eq 'probe.mkv' }).pos
+    Check 'room list time runs on between statuses' ($pp -gt 101 -and $pp -lt 100 + $clock.Elapsed.TotalSeconds + 0.2) ("pos={0:N2} after {1:N1}s" -f $pp, $clock.Elapsed.TotalSeconds)
+    $probe.Close()
+    [void](Wait-Until { (Names).Count -eq 2 } 5)
+
     # The share port serves playlist files only.
     $denied = @('..\..\Windows\win.ini', 'watch-together-rate.txt', 'C:\Windows\win.ini') | ForEach-Object { Ask-Share $_ }
     Check 'files outside the playlist are refused' (-not ($denied | Where-Object { $_ -notmatch 'not shared' })) ($denied -join ' | ')

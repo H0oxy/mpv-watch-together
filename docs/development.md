@@ -48,7 +48,7 @@ Host to guests:
 | `t` | fields | meaning |
 |---|---|---|
 | `state` | `epoch`, `ev`, `by`, `pos`, `paused`, `speed`, `dur`, `file`, `pl`, optional `you`, optional `wait[]` | `ev`: `sync` (to one guest: on hello, or refusing a request), `pause`/`seek`/`speed`/`file` (a change, to all, `epoch` +1, `by` = who did it), `hold`/`resume` (the room starts/stops waiting), `tick` (every second, same `epoch`). `wait` lists `{name, reason}` while the room waits |
-| `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host), `wait` |
+| `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host), `wait`; a guest's `pos` is its last status projected to the moment the list is built (`pos + (now - status received + rtt/2) * speed`), so it compares with the host's own `pos` |
 | `notice` | `key` (`joined`/`left`/`gave_up`), `name` | for the OSD |
 | `files` | `names[]`, `port` | the host's local playlist file names (empty when sharing is off), on hello and on every playlist or file change |
 

@@ -335,7 +335,7 @@ local loading_since         -- start-file seen, first playback-restart not yet
 
 -- host
 local epoch = 0             -- bumped on every discrete change; guests use it to drop stale ticks
-local members = {}          -- bridge id -> {name, file, dur, pos, paused, rtt, at, v, wait, wait_since, gave_up}
+local members = {}          -- bridge id -> {name, file, dur, pos, pos_at, paused, rtt, at, v, wait, wait_since, gave_up}
 local switch_by             -- name of the guest whose request made the host switch files
 local holding = false       -- the room is paused because someone is waiting
 local want_paused = false   -- what the room's users last asked for, applied when the hold ends
@@ -430,11 +430,13 @@ local function room_info()
     for _, id in ipairs(ids) do
         local m = members[id]
         -- Every guest gets the whole list each second, so keep entries small.
-        local e = { name = m.name, file = m.file and short(m.file, 80), pos = m.pos, paused = m.paused,
+        local e = { name = m.name, file = m.file and short(m.file, 80), paused = m.paused,
                     stale = now - m.at > 6, wait = m.wait }
-        if m.pos and me.pos and m.file == me.file then
-            local pos = m.pos + (m.paused and 0 or (now - m.at + (m.rtt or 0) / 2) * speed)
-            e.off = pos - me.pos
+        if m.pos then
+            -- Moved on to now: the guest reported up to a second ago, and the panel shows its time
+            -- next to the host's own time-pos read just above.
+            e.pos = m.pos + (m.paused and 0 or (now - m.pos_at + (m.rtt or 0) / 2) * speed)
+            if me.pos and m.file == me.file then e.off = e.pos - me.pos end
         end
         list[#list + 1] = e
     end
@@ -934,6 +936,7 @@ local function on_guest_message(id, m)
     elseif m.t == "status" then
         g.file = type(m.file) == "string" and m.file:sub(1, 512) or nil
         g.pos = type(m.pos) == "number" and m.pos or nil
+        g.pos_at = mp.get_time()  -- not g.at: any message refreshes that, and a ping comes just before this
         g.paused = m.paused == true
         g.rtt = type(m.rtt) == "number" and m.rtt or nil
     elseif m.t == "wait" then
