@@ -8,3 +8,4 @@ The user-facing guide is [README.md](../README.md). This file keeps the notes th
 - Porthole's "Виртуальная LAN" add-on is not needed for port sharing.
 - The menu is in Russian on a Russian Windows and in English otherwise; `lang=ru|en` forces it.
 - Version 1.0 cannot join a 1.1 room (protocol 2). Install 1.1 by hand once; from then on mpv offers new releases at startup.
+- Torrent mode (1.6.0 test build, 2026-11-15): a guest's player got nothing from the torrent until the guest switched their proxy app to direct. The cause was not checked; if a guest's torrent never loads, ask whether a proxy or VPN app is on.
