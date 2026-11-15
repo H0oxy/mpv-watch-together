@@ -45,6 +45,7 @@ local o = {
     torrent_cache = 256,    -- MB of RAM the torrent engine keeps; nothing is written to disk
     torrent_url = "",       -- a TorrServer that already runs, e.g. http://127.0.0.1:8090; empty = the plugin's own
     torrent_check = 20,     -- seconds of swarm-speed check when an episode is picked from a torrent; 0 = off
+    torrent_preload = 120,  -- seconds before a torrent episode ends to fetch the start of the next one; 0 = off
 }
 options.read_options(o, "watch_together")
 local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10  -- also the length offered when the setting is off
@@ -454,6 +455,7 @@ local check_wanted = false  -- guest: the host runs a check, measure as soon as 
 local check_room            -- guest: {left} of the host's check, from the room info
 local last_missing          -- guest: the room's file last logged as missing here
 local send_torrent, on_room_torrent, drop_room_torrent, start_check, stop_check, check_result  -- defined further down
+local preload_next          -- defined in the torrent section; the 1 s timer calls it
 local report_wait           -- defined with the waiting code; the host's first answer calls it
 
 local show_panel = false
@@ -2141,6 +2143,8 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
         engine.ready = true
         for _, args in ipairs(engine.queue) do mp.commandv(unpack(args)) end
         engine.queue = {}
+    elseif kind == "preloaded" or kind == "preload-failed" then
+        tlog("preload of #%s in %s: %s", tostring(b), tostring(a), kind == "preloaded" and "done" or tostring(c))
     elseif kind == "restarted" then
         tlog("engine: it had stopped and runs again")
     elseif kind == "files" then
@@ -2316,6 +2320,25 @@ function on_room_torrent(m)
     else
         add(magnet)
     end
+end
+
+local preloaded_path         -- the episode whose next one was asked for, so it is asked for once
+
+-- Near the end of a torrent episode, the engine fetches the start (and the last 8 MB, where an index often
+-- is) of the next playlist entry, so it starts at once: for everyone in a room, each from its own engine,
+-- and alone too. TorrServer fetches half its cache (128 MB), the preloadCache share torrent.ps1 sets. A next
+-- entry that is a local file or a host stream needs nothing.
+function preload_next()
+    if o.torrent_preload <= 0 then return end
+    local path = mp.get_property("path")
+    if not engine_hash(path) or preloaded_path == path then return end
+    local left = (mp.get_property_number("duration") or 0) - (mp.get_property_number("time-pos") or 0)
+    if left <= 0 or left > o.torrent_preload then return end
+    preloaded_path = path
+    local hash, index = engine_hash(mp.get_property("playlist/" .. (mp.get_property_number("playlist-pos", -1) + 1) .. "/filename"))
+    if not hash or not index then return end
+    tlog("preload: index %d of %s, %d s before the end", index, hash, left)
+    engine_cmd("preload", hash, tostring(index))
 end
 
 -- This player's part of the swarm check: the torrent's download speed against the episode's bitrate.
@@ -2621,6 +2644,7 @@ mp.add_periodic_timer(1, function()
             osd(T("lost"))
         end
     end
+    preload_next()
     update_panel()
 end)
 

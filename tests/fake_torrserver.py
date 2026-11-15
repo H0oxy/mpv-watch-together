@@ -105,9 +105,13 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/log":
             with LOCK:
                 return self.reply(200, list(LOG))
+        q = urllib.parse.parse_qs(url.query)
+        if url.path == "/stream" and "preload" in url.query.split("&"):
+            with LOCK:
+                LOG.append("preload %s %s" % (q.get("link", [""])[0].lower(), q.get("index", [""])[0]))
+            return self.reply(200, b"", "text/plain")
         if not url.path.startswith("/stream/"):
             return self.reply(404, b"", "text/plain")
-        q = urllib.parse.parse_qs(url.query)
         h, index = q.get("link", [""])[0].lower(), int(q.get("index", ["0"])[0])
         files = config()["torrents"].get(h)
         if not files or not ADDED.get(h) or not 1 <= index <= len(files):

@@ -94,11 +94,13 @@ If a guest's check line stays at "not on this episode yet", the guest's player h
 
 In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly.
 
+Two minutes before a torrent episode ends, each player's engine starts fetching the beginning of the next episode (128 MB), so the next one starts right away, in a room and alone. `torrent_preload` sets how early.
+
 A jump to a part that hasn't been downloaded yet makes the engine fetch that part first, so the room waits a few seconds ("Waiting for: Alex (buffering)"). How long depends on the swarm. A torrent needs more download speed than the video's bitrate on every PC; the check shows whether there is enough.
 
 The engine listens only on 127.0.0.1, on a random port, and its controls need a password the plugin makes up and keeps in `%APPDATA%\mpv\watch_together_engine\engine.json`, so a web page open in your browser can't add torrents to it. It keeps running while any mpv window is open, so several windows share it, and if it crashes, the plugin starts it again within about 10 seconds. If a guest's player can't load the room's torrent (no file list from the swarm in time, a proxy in the way), it tries again every 30 seconds.
 
-Memory: up to 256 MB in the engine (`torrent_cache`) plus the online buffer (1.5 GB by default, see above). The engine downloads only 16 MB past what mpv has read, so the online buffer decides how far ahead a torrent is downloaded: a bigger one rides out longer slow spells of the swarm. Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`, and `uninstall.bat` removes it.
+Memory: up to 256 MB in the engine (`torrent_cache`) plus the online buffer (1.5 GB by default, see above). The engine downloads only 16 MB past what mpv has read, so the online buffer decides how far ahead a torrent is downloaded: a bigger one rides out longer slow spells of the swarm. Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`. `uninstall.bat` stops it if it runs and removes it, with torrent mode's log; your settings and resume points stay.
 
 ## How sync works
 
@@ -149,6 +151,7 @@ torrent_port=0      # local port of the torrent engine (127.0.0.1 only); 0 = a f
 torrent_cache=256   # MB of RAM the torrent engine keeps
 torrent_url=        # use a TorrServer you already run, e.g. http://127.0.0.1:8090; empty = the plugin's own
 torrent_check=20    # seconds of the swarm check after picking an episode; 0 = off
+torrent_preload=120 # seconds before a torrent episode ends to fetch the next one's start; 0 = off
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 

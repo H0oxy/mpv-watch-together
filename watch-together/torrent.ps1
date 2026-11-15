@@ -5,7 +5,9 @@
 # Commands from main.lua, as script-message watch-together-torrent-cmd <verb> ...:
 #   add <id> <link>   link: magnet, bare hash or file:///path.torrent; answered with files or error
 #   probe <hash>      report the torrent's download speed every second; probe-stop ends it
+#   preload <hash> <index>   fetch the start of that file ahead (the next episode); answered with preloaded
 # Reports to main.lua: engine <bytes> <total> (downloading the engine) | ready <base url> | restarted |
+#   preloaded <hash> <index> | preload-failed <hash> <index> <text> |
 #   files <id> <hash> <json> | stat <hash> <bytes per second> <active peers> <seeders> | error <id> <text>.
 # ASCII only, like bridge.ps1.
 param(
@@ -110,7 +112,8 @@ function Get-Engine {
 function Set-EngineSettings {
     $s = Invoke-Engine '/settings' @{ action = 'get' }
     $want = @{ cacheSize = [int64]$CacheMB * 1MB; useDisk = $false; enableBonjour = $false; enableDLNA = $false;
-               enableRutorSearch = $false; enableTorznabSearch = $false }
+               enableRutorSearch = $false; enableTorznabSearch = $false
+               preloadCache = 50 }   # a preload of the next episode fetches this share of cacheSize
     foreach ($k in $want.Keys) { $s | Add-Member -Force -NotePropertyName $k -NotePropertyValue $want[$k] }
     [void](Invoke-Engine '/settings' @{ action = 'set'; sets = $s })
 }
@@ -217,6 +220,7 @@ Send-Lua @('ready', $Base)
 
 $adding = New-Object System.Collections.ArrayList   # @{ id; hash; until }: added, waiting for the file list
 $probe = ''      # hash whose speed is reported
+$preload = $null # @{ req; task; hash; index }: the next episode being fetched ahead
 $mpvTask = $mpvIn.ReadLineAsync()
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $down = $false   # our engine stopped answering and could not be started again yet
@@ -243,6 +247,16 @@ function On-Command($a) {
             if ($hash -notmatch '^[0-9a-f]{40}$') { throw 'the engine did not take this link' }
             [void]$adding.Add(@{ id = $id; hash = $hash; until = $clock.Elapsed.TotalSeconds + 90 })
         } catch { Send-Lua @('error', $id, (Clean $_.Exception.Message)) }
+    } elseif ($verb -eq 'preload') {
+        # TorrServer answers /stream?preload only once the start of that file is fetched, so the request
+        # runs on its own; a newer one replaces it.
+        $h = ([string]$a[2]).ToLower(); $i = [int]$a[3]
+        if ($h -match '^[0-9a-f]{40}$' -and $i -ge 1) {
+            if ($script:preload) { try { $script:preload.req.Abort() } catch { } }
+            $req = [Net.HttpWebRequest]::Create("$Base/stream?link=$h&index=$i&preload")
+            if ($auth) { $req.Headers['Authorization'] = $auth }
+            $script:preload = @{ req = $req; task = $req.GetResponseAsync(); hash = $h; index = $i }
+        }
     } elseif ($verb -eq 'probe') {
         $script:probe = ([string]$a[2]).ToLower()
     } elseif ($verb -eq 'probe-stop') {
@@ -289,6 +303,16 @@ while ($true) {
             }
         }
     }
+    if ($preload -and $preload.task.IsCompleted) {
+        $pl = $preload; $preload = $null
+        if ($pl.task.Status -eq 'RanToCompletion') {
+            $pl.task.Result.Close()
+            Send-Lua @('preloaded', $pl.hash, "$($pl.index)")
+        } else {
+            Send-Lua @('preload-failed', $pl.hash, "$($pl.index)", (Clean $pl.task.Exception.InnerException.Message))
+        }
+    }
+
     if ($now -lt $next) { continue }
     $next = $now + 1
 

@@ -154,6 +154,14 @@ try {
     Check 'room check: a guest with its own copy needs no swarm' $ok (Panel $a)
     $null = I $a @('set_property', 'pause', $false)
 
+    # Near the end of a torrent episode (70 s left of 600), A and B, who stream it, have their engines fetch the
+    # start of episode 2 ahead; C plays its own copy of episode 1 and asks for nothing.
+    $null = I $a @('seek', 530, 'absolute')
+    $ok = Wait-Until { @((Added) | Where-Object { $_ -eq "preload $h1 2" }).Count -eq 2 } 10
+    Start-Sleep 2   # no third one comes
+    $pre = @((Added) | Where-Object { $_ -like 'preload*' })
+    Check 'near the end, the next episode is fetched ahead' ($ok -and $pre.Count -eq 2) ($pre -join ', ')
+
     # A .torrent file: guests get it from the host's share port and add it as a file.
     $null = I $a @('loadfile', $tfile, 'replace')
     [void](Wait-Until { (Engine-Count $a) -eq 2 } 10)

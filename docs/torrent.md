@@ -73,6 +73,16 @@ Guest (`on_room_torrent`):
 6. A new torrent or none (`drop_room_torrent`, also on leave) removes the old torrent's entries. The playing one is marked in `replaced` and goes at the next `start-file`.
 7. If adding fails (an error, no file list within 90 s, or a hash other than the announced one, with no fallback left), `room_torrent` is cleared and the same message is tried again 30 s later. That only happens while the guest is in the room and the host has sent no other torrent since (`last_room_torrent`). The host sends it only on hello and on a change, so without this a guest would stay on its old file until it rejoined.
 
+## Next episode ahead
+
+`preload_next()` runs in the 1 s timer for every player. Once a torrent episode has `torrent_preload` seconds (120) or less left, it looks at the next playlist entry, only once per episode (`preloaded_path`). If that entry is an engine stream, it sends `preload <hash> <index>`. A next entry that is a local file or a host stream needs nothing, so a guest with its own copy fetches nothing.
+
+`torrent.ps1` sends `GET /stream?link=<hash>&index=<i>&preload` as a `HttpWebRequest.GetResponseAsync()`, because TorrServer answers only once the preload is done, and a newer preload aborts the older one. When it finishes, it reports `preloaded <hash> <index>`, or `preload-failed <hash> <index> <text>`, both for the log.
+
+TorrServer (MatriX.150 `apihelper.go`, `preload.go`) fetches `cacheSize × preloadCache %` from the start of the file, plus the last piece or 8 MB (an index is often there). `torrent.ps1` sets `preloadCache = 50`, so that is 128 MB of the 256 MB cache. The pieces stay in the engine's cache, and the next episode's first reads come from there.
+
+Test: torrent.ps1 "near the end, the next episode is fetched ahead". The room is 70 s before the end of episode 1: A and B, who stream it, ask the fake engine for index 2 exactly once each; C, on its own copy, asks for nothing.
+
 ## Swarm check
 
 - **Start:** when an episode is picked with `torrent_check > 0`, `check_after_pick` is set and `pause` turns on before the load. In the host's `file-loaded` that matches it, `start_check()` runs. The menu item Check the torrent pauses and starts it as well.
@@ -125,7 +135,7 @@ The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7;
 - a guest's torrent log records the room torrent, its episodes and the check;
 - a room torrent the guest's engine could not take is tried again (`fake_torrserver.py` reads its config on every request, so the test adds the torrent after the first try failed).
 
-Last run: 28/28.
+Last run: 29/29.
 
 ## Log
 
