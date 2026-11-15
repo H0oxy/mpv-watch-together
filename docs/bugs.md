@@ -41,6 +41,9 @@ Symptom: after a guest's seek during playback, the others were up to about 0.3 s
 ## Test artifact: sequential reads look like drift
 Symptom: with 21 players, "spread" was up to 0.4 s although the players were in sync. Cause: the test reads positions one by one, and playing players move during the reads. Fix: tests move each playing position back by the time since the first read.
 
+## Test artifact: one fake tick, undone before the poll saw it
+Symptom: e2e "small drift caught up by speed", "user speed change during a nudge" and "soft sync off: small drift is a seek" each failed now and then (`nudged=False`, `jumped=False`). The first one also failed on unchanged 1.5.4 code. Cause: the test sent B one fake tick ("the host is 0.3 s ahead") and polled for the nudge or the seek. A real tick from the host every second corrects B again, so when it came right after the fake one, the effect lasted a fraction of a second and the poll could miss it. Fix: `Push-Tick` sends the fake tick, waits 0.3 s (a tick is handled 0.25 s after it arrives) and checks, again and again for up to 3 s. A nudge or seek that never happens still fails. Verified: e2e passed three runs in a row with all three checks.
+
 ## Test artifact: the countdown pause read too early
 Symptom: features.ps1 "next episode starts paused for everyone" failed 2 runs in 6 with `pause` false on episode 2. Cause: the test read `pause` the moment both file names had changed, but the countdown pauses at the episode's first `playback-restart` (see "Countdown deadlock"), 60-90 ms later; a throwaway probe measured that gap on 3 of 3 episode changes. Fix: the test waits up to 2 s for the pause and then checks that the episode is still under 1.5 s in. Verified: features passed three runs in a row.
 

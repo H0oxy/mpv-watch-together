@@ -256,7 +256,7 @@ Spread is measured with every playing position moved back to the time of the fir
 
 Last results (mpv 0.41.0-dev, one PC):
 
-- e2e: 31/31 (2026-11-15). Timing-sensitive, and each failed once and passed on the next run: "soft sync off: small drift is a seek" (also on unchanged 1.5.4 code), "small drift caught up by speed" and "user speed change during a nudge".
+- e2e: 31/31 (2026-11-15), three runs in a row after the fix of its fake-tick checks (bugs.md, test artifact: one fake tick, undone before the poll saw it).
 - features: 28/28 (2026-11-15), three runs in a row after the fix of its countdown check (bugs.md, test artifact: the countdown pause read too early).
 - buffering: 8/8 (2026-11-15).
 - stream: 4/4 (2026-11-15).

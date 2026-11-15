@@ -166,8 +166,17 @@ try {
     # A fake tick tells B the host is 0.3 s ahead: B must catch up by speed, not seek, and settle back.
     $tick = ConvertTo-Json -Compress @{ t = 'state'; ev = 'tick'; pos = (Get-Prop $a 'time-pos') + 0.3; paused = $false; speed = 1;
                                         dur = (Get-Prop $b 'duration'); file = (Get-Prop $b 'filename') }
-    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', $tick) | Out-Null
-    $nudged = Wait-Until { (Get-Prop $b 'speed') -gt 1.01 } 1.5
+    # A fake tick says the host is further than it is. A real tick comes every second and corrects B again,
+    # so the effect of one fake tick can be gone before a poll sees it: send it until the effect shows.
+    function Push-Tick([double]$ahead, [scriptblock]$seen) {
+        Wait-Until {
+            $t = $tick -replace '"pos":[\d.]+', ('"pos":' + ((Get-Prop $a 'time-pos') + $ahead))
+            Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', $t) | Out-Null
+            Start-Sleep -Milliseconds 300   # B handles a tick 0.25 s after it arrives
+            & $seen
+        } 3
+    }
+    $nudged = Push-Tick 0.3 { (Get-Prop $b 'speed') -gt 1.01 }
     $spreads = foreach ($i in 1..8) { Start-Sleep -Milliseconds 500; Get-Spread $all }
     $max = ($spreads | Measure-Object -Maximum).Maximum
     $settled = Wait-Until { (Get-Prop $b 'speed') -eq 1 -and (Get-Spread $all) -lt 0.1 } 10
@@ -175,8 +184,7 @@ try {
     Check 'small drift caught up by speed, no seek' $ok ("nudged={0} max={1:N3}s settled={2} spread={3:N3}s" -f $nudged, $max, $settled, (Get-Spread $all))
 
     # The user presses "]" (x1.1) on B while it is nudged: the room gets 1.1, not 1.1 times the nudge.
-    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', ($tick -replace '"pos":[\d.]+', ('"pos":' + ((Get-Prop $a 'time-pos') + 0.3)))) | Out-Null
-    $nudged = Wait-Until { (Get-Prop $b 'speed') -gt 1.01 } 1.5
+    $nudged = Push-Tick 0.3 { (Get-Prop $b 'speed') -gt 1.01 }
     Invoke-Mpv $b @('multiply', 'speed', 1.1) | Out-Null
     $ok = $nudged -and (Wait-Until { [math]::Abs((Get-Prop $a 'speed') - 1.1) -lt 0.001 } 3)
     Check 'user speed change during a nudge reaches the room exactly' $ok ("nudged={0} a={1}" -f $nudged, (Get-Prop $a 'speed'))
@@ -186,8 +194,7 @@ try {
     # Soft sync off on B: a 0.4 s drift, which a nudge would take, is now a seek; the next tick seeks back.
     Invoke-Mpv $b @('script-message', 'watch-together-setting', 'soft_sync') | Out-Null
     Start-Sleep 2  # past B's last local action, so ticks are applied again
-    Invoke-Mpv $b @('script-message-to', 'watch_together', 'watch-together-net', 'in', 'host', ($tick -replace '"pos":[\d.]+', ('"pos":' + ((Get-Prop $a 'time-pos') + 0.4)))) | Out-Null
-    $jumped = Wait-Until { (Get-Spread $all) -gt 0.3 } 1.5
+    $jumped = Push-Tick 0.4 { (Get-Spread $all) -gt 0.3 }
     $speedOk = (Get-Prop $b 'speed') -eq 1
     $settled = Wait-Until { (Get-Spread $all) -lt 0.3 } 4
     Invoke-Mpv $b @('script-message', 'watch-together-setting', 'soft_sync') | Out-Null
