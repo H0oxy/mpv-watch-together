@@ -95,3 +95,15 @@ Symptom: features.ps1 failed "downloaded episode added to the playlist" about on
 
 ## One peer that stops reading blocks the host bridge
 Risk (found in an audit): writes to peers are blocking. A peer whose TCP window stays at zero would stop the bridge loop for everyone. Fix: `SendTimeout = 5000` on each peer socket; the write throws and the peer is closed. Not reproduced; whether Porthole passes back-pressure is unknown.
+
+## mpv turns a magnet into a file path
+Symptom: `loadfile "magnet:?xt=…"` did nothing in torrent mode, and the entry showed as `C:\…\magnet:?xt=…`. Cause: mpv 0.41 sees no `scheme://` in a magnet, takes it for a relative path, puts the working folder in front and turns `/` into `\` (`tr=udp://x/announce` becomes `tr=udp:\x\announce`). Fix: the `on_load` hook takes everything from `magnet:?`, turns `\` back into `/`, and restores `=scheme:/x` to `=scheme://x`. The menu's "Open torrent" never puts the magnet into the playlist. Verified: probed with a real mpv; tests\torrent.ps1 "the magnet reached the engine unchanged".
+
+## Two guests on one PC fetched the same .torrent file
+Symptom: in tests\torrent.ps1 one of two guests fell back to the bare hash. Cause: both saved the host's `<hash>.torrent` to the same path in `%TEMP%\watch-together`; one removed or refused the other's file. Fix: `fetch.ps1 -SaveAs <hash>-<pid>.torrent`, deleted after the engine has read it. Verified: both guests add the file (`/log` of the fake engine), and no file is left behind.
+
+## The last seconds of a file were not remembered
+Symptom: reopening a torrent offered an episode watched minutes before, not the last one. Cause: `remember()` ran only every 10 s, so a file left within 10 s of a change was never saved. Fix: `remember()` also runs in an `on_unload` hook. Verified: tests\torrent.ps1 "the chooser resumes the torrent where it stopped" failed before and passes after.
+
+## A torrent added twice never answered the first time
+Risk (found in review): `torrent.ps1` kept one pending add per hash, so a second add of the same torrent replaced the first, and the first caller (a deferred `on_load` hook) would wait forever. Fix: each add is its own job. Not reproduced.

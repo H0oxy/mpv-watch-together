@@ -9,7 +9,9 @@ param(
     [Parameter(Mandatory)][int]$Port,
     [Parameter(Mandatory)][string]$Name,
     [Parameter(Mandatory)][string]$Dir,
-    [string]$Who = ''
+    [string]$Who = '',
+    [string]$Event = 'watch-together-dl-event',  # script message for the reports (a .torrent has its own)
+    [string]$SaveAs = ''                         # local file name, if not the host's
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -19,15 +21,16 @@ $mpv.Connect(5000)
 $mpvOut = New-Object System.IO.StreamWriter($mpv, $utf8)
 $mpvOut.AutoFlush = $true
 function Send-Lua([string[]]$msg) {
-    $cmd = @('script-message-to', $Script, 'watch-together-dl-event') + $msg
+    $cmd = @('script-message-to', $Script, $Event) + $msg
     $mpvOut.WriteLine((ConvertTo-Json -Compress -InputObject @{ command = $cmd }))
 }
 
 $client = $null; $out = $null
 try {
-    if ($Name -match '[\\/:*?"<>|]' -or $Name -eq '.' -or $Name -eq '..') { throw 'bad file name' }
+    $local = if ($SaveAs) { $SaveAs } else { $Name }
+    foreach ($n in $Name, $local) { if ($n -match '[\\/:*?"<>|]' -or $n -eq '.' -or $n -eq '..') { throw 'bad file name' } }
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-    $target = Join-Path $Dir $Name
+    $target = Join-Path $Dir $local
     # The folder can change while a queue runs (another video opened): never replace a file that is there.
     if (Test-Path -LiteralPath $target) { throw "$target already exists" }
     $part = "$target.part"

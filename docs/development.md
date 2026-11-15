@@ -10,6 +10,7 @@ watch-together/update.ps1   GitHub release check / install
 watch-together/share.ps1    host: serves playlist files to guests on share_port
 watch-together/fetch.ps1    guest: downloads one file from share.ps1, resumable
 watch-together/stream.ps1   guest: local HTTP server for mpv, fetches pieces from share.ps1 over 4 connections
+watch-together/torrent.ps1  torrent mode: downloads, checks and starts TorrServer, adds torrents, reports speed (docs/torrent.md)
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
@@ -18,6 +19,8 @@ tests/features.ps1          settings, watching from host, downloads, countdown, 
 tests/stream.ps1            stream.ps1 + share.ps1 without a room: byte ranges of a 50 MB and a sparse 5 GB file, and through a relay that cuts every connection after 700 KB
 tests/update.ps1            manual, needs the network: update.ps1 check and install against the real releases
 tests/speed.ps1             manual: download speed from a host's share port with 1, 2, 4, 8 connections
+tests/torrent.ps1           torrent mode offline: host + 3 guests against fake_torrserver.py (needs python)
+tests/fake_torrserver.py    the TorrServer API calls the plugin makes, over local files
 install.bat, uninstall.bat
 ```
 
@@ -37,11 +40,12 @@ Guest to host:
 
 | `t` | fields | meaning |
 |---|---|---|
-| `hello` | `v`, `name`, `cid` | first message; `v` must be 2. `cid` is the player's id (16 hex digits in `settings`, a new one per run without a config folder). A hello whose `cid` is already in the room replaces that member: the host drops the old entry without a "left" notice and closes its connection, so a guest who comes back keeps its name |
+| `hello` | `v`, `name`, `cid`, `torrent` | first message; `torrent: true` from 1.6 (can follow a torrent room); `v` must be 2. `cid` is the player's id (16 hex digits in `settings`, a new one per run without a config folder). A hello whose `cid` is already in the room replaces that member: the host drops the old entry without a "left" notice and closes its connection, so a guest who comes back keeps its name |
 | `req` | `ev`, `pos`, `paused`, `speed`, `dur`, `file`, `pl` | a local user action: `ev` is `pause`, `seek`, `speed` or `file` |
 | `status` | `file`, `pos`, `paused`, `rtt` | every second, for the member list |
 | `wait` | `reason` (`buffering`, `loading` or empty) | sent when this player starts or stops waiting |
 | `ping` | `id` | every second; the host answers `pong` |
+| `check` | `r` = `{speed, need, peers, local}` | every second while the host runs a swarm check ([torrent.md](torrent.md#swarm-check)) |
 
 Host to guests:
 
@@ -51,6 +55,8 @@ Host to guests:
 | `room` | `control`, `members[]` | every second; members: `name`, `file`, `pos`, `paused`, `host`, `stale`, `off` (seconds ahead of the host), `wait`; a guest's `pos` is its last status projected to the moment the list is built (`pos + (now - status received + rtt/2) * speed`), so it compares with the host's own `pos` |
 | `notice` | `key` (`joined`/`left`/`gave_up`), `name` | for the OSD |
 | `files` | `names[]`, `port` | the host's local playlist file names (empty when sharing is off), on hello and on every playlist or file change |
+| `torrent` | optional `hash`, `magnet`, `tfile` | the torrent the room watches, on hello and when it changes; no `hash` = none ([torrent.md](torrent.md#room)) |
+| `check` | `on` | the host starts or ends a swarm check; while it runs, `room` carries `check = {left}` and each member's `check` |
 
 State events added in 1.4:
 
@@ -242,11 +248,15 @@ Spread is measured with every playing position moved back to the time of the fir
 
 Last results (mpv 0.41.0-dev, one PC):
 
-- e2e: 28/28.
-- features: 15/15.
-- buffering: 8/8.
-- scale with 5 guests: 6/6 runs.
+- e2e: 30/30 (2026-11-15). "soft sync off: small drift is a seek" failed once on unchanged 1.5.4 code and passed on the next run: flaky.
+- features: 28/28 (2026-11-15).
+- buffering: 8/8 (2026-11-15).
+- stream: 4/4 (2026-11-15).
+- torrent: 22/22 (2026-11-15).
+- scale with 5 guests: 6/6 runs; one run on 2026-11-15: connect + sync 0.7 s, pause to all 0.08 s, spread under 0.17 s.
 - scale with 20 guests: connect + sync 1.5 s, pause to all 0.08 s, guest seek to all 0.33 s, spread under 0.2 s, host bridge about 2% of a core.
+
+The test videos need an `ffmpeg` with libx264 on PATH the first time. Not every `ffmpeg.exe` bundled with other software has it: one without libx264 leaves empty files, and every sync check then fails.
 
 `scale.ps1` stops its mpv instances in `finally`. Do not pipe it into `Select-Object -First`: that stops the script before `finally` runs and leaves mpv instances holding the test pipe names.
 

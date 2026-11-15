@@ -51,6 +51,12 @@ function Find-Shared([string]$name) {
         $full = if ([IO.Path]::IsPathRooted($f)) { $f } else { Join-Path $wd $f }
         if ([IO.Path]::GetFileName($full) -eq $name -and (Test-Path -LiteralPath $full -PathType Leaf)) { return $full }
     }
+    # The room's .torrent, asked for as <hash>.torrent: main.lua names it and its path in user-data.
+    $tname = [string](Get-Mpv 'user-data/watch-together/torrent-name')
+    if ($tname -and $name -eq $tname) {
+        $tpath = [string](Get-Mpv 'user-data/watch-together/torrent-file')
+        if ($tpath -and (Test-Path -LiteralPath $tpath -PathType Leaf)) { return $tpath }
+    }
     $null
 }
 

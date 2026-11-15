@@ -9,8 +9,15 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.5.4"
+local VERSION = "1.6.0"
 local PROTOCOL = 2
+
+-- The torrent engine (TorrServer, GPL-3.0) is downloaded on first use of a magnet or .torrent, never
+-- shipped. Only a file with this hash runs; a new engine version comes with a plugin release.
+local ENGINE = {
+    url = "https://github.com/YouROK/TorrServer/releases/download/Silo.2/TorrServer-windows-amd64.exe",
+    sha256 = "2b5d87a07c3fc8cbe1e70d98034861aedab0fbfe4e519a777ee2f28a26439a2f",
+}
 
 local o = {
     port = 47800,
@@ -31,6 +38,10 @@ local o = {
     share_port = 47801,     -- host: port for those downloads (share it in Porthole next to port)
     download_dir = "",      -- guest: where downloads go; empty = next to the current file, else Downloads
     stream_cache = 512,     -- guest: MB of RAM for an episode watched from the host, 3/4 ahead, 1/4 behind; 0 = mpv's own
+    torrent_port = 47802,   -- local port of the torrent engine; it listens on 127.0.0.1 only
+    torrent_cache = 256,    -- MB of RAM the torrent engine keeps; nothing is written to disk
+    torrent_url = "",       -- a TorrServer that already runs, e.g. http://127.0.0.1:8090; empty = the plugin's own
+    torrent_check = 20,     -- seconds of swarm-speed check when an episode is picked from a torrent; 0 = off
 }
 options.read_options(o, "watch_together")
 local COUNTDOWN_SECONDS = o.countdown > 0 and o.countdown or 10  -- also the length offered when the setting is off
@@ -197,6 +208,24 @@ local STRINGS = {
         save_downloads = "В папку «Загрузки»",
         save_to_set = "Серии будут сохраняться: %s",
         more = "…и ещё %d",
+        open_torrent = "Открыть торрент из буфера обмена",
+        bad_torrent_clipboard = "В буфере обмена нет magnet-ссылки или пути к .torrent",
+        torrent_opening = "Торрент: получаю список файлов…",
+        torrent_choose = "С какой серии начать?",
+        torrent_stopped_at = "остановились на %s",
+        torrent_empty = "В торренте нет файлов",
+        torrent_failed = "Торрент: %s",
+        torrent_room = "Комната смотрит торрент, подключаюсь к раздаче…",
+        torrent_ready = "Серии торрента добавлены в плейлист",
+        engine_progress = "Загрузка торрент-движка: %d%% (%s из %s)",
+        engine_died = "торрент-движок остановился",
+        old_torrent = "У участника %s старая версия плагина: торрент он не увидит",
+        check_menu = "Проверить раздачу",
+        check_title = "Проверка раздачи: ещё %d с. Пробел — начать",
+        check_done = "Проверка раздачи готова. Пробел — начать",
+        check_line = "%s %s — %.1f из ~%.1f Мбит/с, пиров %d",
+        check_measuring = "… %s — меряем",
+        check_local = "✓ %s — свой файл",
     },
     en = {
         menu = "Watch together",
@@ -298,6 +327,24 @@ local STRINGS = {
         save_downloads = "Downloads folder",
         save_to_set = "Episodes will be saved to: %s",
         more = "…and %d more",
+        open_torrent = "Open torrent from clipboard",
+        bad_torrent_clipboard = "No magnet link or .torrent path in the clipboard",
+        torrent_opening = "Torrent: getting the file list…",
+        torrent_choose = "Start from which episode?",
+        torrent_stopped_at = "stopped at %s",
+        torrent_empty = "The torrent has no files",
+        torrent_failed = "Torrent: %s",
+        torrent_room = "The room watches a torrent, joining the swarm…",
+        torrent_ready = "The torrent's episodes are in the playlist",
+        engine_progress = "Downloading the torrent engine: %d%% (%s of %s)",
+        engine_died = "the torrent engine stopped",
+        old_torrent = "%s has an old plugin version and won't see the torrent",
+        check_menu = "Check the torrent",
+        check_title = "Checking the swarm: %d s left. Space: start",
+        check_done = "Swarm check done. Space: start",
+        check_line = "%s %s — %.1f of ~%.1f Mbit/s, %d peers",
+        check_measuring = "… %s — measuring",
+        check_local = "✓ %s — own file",
     },
 }
 local lang = "en"  -- until the Windows display language is known
@@ -372,6 +419,16 @@ local stream_port           -- guest: its local HTTP port, once it is ready
 local remember, start_share, stop_share, send_files, cancel_downloads, offer_resume  -- defined further down
 local add_streams, stop_stream
 
+-- torrents: every player streams from its own engine, the host only tells guests which torrent
+local ENGINE_BASE = o.torrent_url ~= "" and (o.torrent_url:gsub("/+$", "")) or ("http://127.0.0.1:" .. o.torrent_port)
+local torrents = {}         -- hash -> {hash, magnet, tfile, files = {{i, name, path, length}}}
+local room_torrent          -- guest: {hash} the host's room watches
+local sent_torrent          -- host: hash last told to the guests ("" = none)
+local check                 -- this player's swarm-speed measurement: {hash, length, started, ends, sum, n, peers}
+local check_wanted = false  -- guest: the host runs a check, measure as soon as we are on the episode
+local check_room            -- guest: {left} of the host's check, from the room info
+local send_torrent, on_room_torrent, drop_room_torrent, start_check, stop_check, check_result  -- defined further down
+
 local show_panel = false
 local PANEL_LINES = 20
 local panel = mp.create_osd_overlay("ass-events")
@@ -397,11 +454,34 @@ local function menu_name(name) return (short(name, 60):gsub("&", "&&")) end
 
 local function is_url(path) return path:find("^%a[%w+.-]*://") ~= nil end
 
--- A stream from the host (stream.ps1) carries the file name percent-encoded at the end of its URL.
+-- A stream from the host (stream.ps1) or the torrent engine carries the file name percent-encoded at the
+-- end of its URL path; the engine's query (?link=...) is not part of the name.
 local function basename(path)
+    local url = is_url(path)
+    if url then path = path:gsub("[?#].*$", "") end
     local name = path:match("[^/\\]+$") or path
-    if is_url(path) then name = name:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end) end
+    if url then name = name:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end) end
     return name
+end
+
+-- The current file's name as the room knows it. mpv's "filename" keeps the query of a torrent stream.
+local function media_name()
+    local path = mp.get_property("path")
+    return path and basename(path) or nil
+end
+
+local function pct(s) return (s:gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)) end
+
+local function engine_url(hash, f)
+    return ENGINE_BASE .. "/stream/" .. pct(f.name) .. "?link=" .. hash .. "&index=" .. f.i .. "&play"
+end
+
+-- Hash and file index of a torrent stream from our engine, else nil.
+local function engine_hash(path)
+    local prefix = ENGINE_BASE .. "/stream/"
+    if type(path) ~= "string" or path:sub(1, #prefix) ~= prefix then return nil end
+    local hash = path:match("[?&]link=(%x+)")
+    return hash and #hash == 40 and hash:lower() or nil, tonumber(path:match("[?&]index=(%d+)"))
 end
 
 local function in_room() return status == "connected" or status == "lost" or status == "hosting" end
@@ -409,7 +489,7 @@ local function in_room() return status == "connected" or status == "lost" or sta
 ------------------------------------------------------------------ room info
 
 local function local_member()
-    return { name = my_name, file = mp.get_property("filename"), pos = mp.get_property_number("time-pos"),
+    return { name = my_name, file = media_name(), pos = mp.get_property_number("time-pos"),
              paused = mp.get_property_native("pause"), host = role == "host", wait = my_wait }
 end
 
@@ -422,6 +502,7 @@ end
 local function room_info()
     local now = mp.get_time()
     local me = local_member()
+    me.check = check and check_result() or nil
     local list = { me }
     local speed = mp.get_property_number("speed", 1)
     local ids = {}
@@ -431,7 +512,7 @@ local function room_info()
         local m = members[id]
         -- Every guest gets the whole list each second, so keep entries small.
         local e = { name = m.name, file = m.file and short(m.file, 80), paused = m.paused,
-                    stale = now - m.at > 6, wait = m.wait }
+                    stale = now - m.at > 6, wait = m.wait, check = check and m.check or nil }
         if m.pos then
             -- Moved on to now: the guest reported up to a second ago, and the panel shows its time
             -- next to the host's own time-pos read just above.
@@ -440,7 +521,8 @@ local function room_info()
         end
         list[#list + 1] = e
     end
-    return { t = "room", control = control, members = list }
+    local c = check and { left = math.max(0, math.ceil(check.ends - now)) } or nil
+    return { t = "room", control = control, members = list, check = c }
 end
 
 local function current_room()
@@ -463,16 +545,46 @@ end
 
 local function ass_escape(s) return (s:gsub("\\", "\\\\"):gsub("{", "\\{"):gsub("}", "\\}")) end
 
+-- One member's swarm check: can its download keep up with the episode's bitrate (with a 1.5x margin)?
+local function check_label(name, c)
+    if type(c) ~= "table" then return nil end
+    if c["local"] then return T("check_local", short(name, 20)) end
+    if not c.need or not c.speed then return T("check_measuring", short(name, 20)) end
+    local ratio = c.speed / c.need
+    local mark = ratio >= 1.5 and "✓" or ratio >= 1 and "⚠" or "✗"
+    return T("check_line", mark, short(name, 20), c.speed / 1e6, c.need / 1e6, math.floor(c.peers or 0))
+end
+
+-- The running check as panel lines, or nil. The host's room info carries everyone's results.
+local function check_lines()
+    local left, list
+    if role == "join" then
+        if not check_room then return nil end
+        left, list = check_room.left, room and room.members or {}
+    else
+        if not check then return nil end
+        left = math.max(0, math.ceil(check.ends - mp.get_time()))
+        list = role == "host" and room_info().members or { { name = my_name, check = check_result() } }
+    end
+    local lines = { left > 0 and T("check_title", left) or T("check_done") }
+    for i = 1, math.min(#list, PANEL_LINES) do lines[#lines + 1] = check_label(list[i].name, list[i].check) end
+    return lines
+end
+
 local function update_panel()
     local r = current_room()
-    if not show_panel or not r or not in_room() then
+    local lines = {}
+    for _, l in ipairs(check_lines() or {}) do lines[#lines + 1] = ass_escape(l) end
+    if #lines == 0 and show_panel and r and in_room() then
+        local list = r.members or {}
+        for i = 1, math.min(#list, PANEL_LINES) do lines[#lines + 1] = ass_escape(member_label(list[i], true)) end
+        if #list > PANEL_LINES then lines[#lines + 1] = T("more", #list - PANEL_LINES) end
+    end
+    mp.set_property_native("user-data/watch-together/panel", lines)  -- for tests
+    if #lines == 0 then
         panel:remove()
         return
     end
-    local lines = {}
-    local list = r.members or {}
-    for i = 1, math.min(#list, PANEL_LINES) do lines[#lines + 1] = ass_escape(member_label(list[i], true)) end
-    if #list > PANEL_LINES then lines[#lines + 1] = T("more", #list - PANEL_LINES) end
     -- Top right, below where fullscreen window buttons appear: the top left belongs to mpv's own
     -- messages (our notices, volume, seek time, stats), which would overlap the panel.
     local w, h = mp.get_osd_size()
@@ -544,7 +656,14 @@ local function menu_item()
         items[#items + 1] = { type = "separator" }
     end
     items[#items + 1] = { title = T("status", status_text), state = { "disabled" } }
-    items[#items + 1] = { title = T("you", menu_name(mp.get_property("filename"))), state = { "disabled" } }
+    items[#items + 1] = { title = T("you", menu_name(media_name())), state = { "disabled" } }
+    -- A guest follows the host's files, so only the host or someone alone opens a torrent.
+    if role ~= "join" then
+        items[#items + 1] = { title = T("open_torrent"), cmd = "script-message watch-together-open-torrent" }
+        if engine_hash(mp.get_property("path")) then
+            items[#items + 1] = { title = T("check_menu"), cmd = "script-message watch-together-check" }
+        end
+    end
     local r = current_room()
     if in_room() and r and r.members then
         local sub = {}
@@ -695,7 +814,7 @@ end
 
 -- Different durations mean different files: syncing them would only jump around.
 local function same_file(dur)
-    local mine, name = mp.get_property_number("duration"), mp.get_property("filename")
+    local mine, name = mp.get_property_number("duration"), media_name()
     if not mine then return false end
     if type(dur) ~= "number" or math.abs(dur - mine) <= 1 then
         warned_mismatch = false
@@ -711,7 +830,7 @@ end
 -- Same file name in my playlist first, a local copy before a stream from the host; different
 -- releases fall back to the same playlist position.
 local function follow_file(m)
-    if type(m.file) ~= "string" or m.file == mp.get_property("filename") then return false end
+    if type(m.file) ~= "string" or m.file == media_name() then return false end
     -- We just moved on to the next episode by ourselves; the host gets there a moment later.
     if role == "join" and mp.get_time() < keep_file_until then return false end
     local playlist = mp.get_property_native("playlist") or {}
@@ -723,7 +842,8 @@ local function follow_file(m)
         end
     end
     index = index or stream_index
-    if not index and type(m.pl) == "number" and m.pl >= 0 and m.pl < #playlist then index = m.pl end
+    -- In a torrent room names are exact; a missing one is still being added, not another release.
+    if not index and not room_torrent and type(m.pl) == "number" and m.pl >= 0 and m.pl < #playlist then index = m.pl end
     if not index or index == mp.get_property_number("playlist-pos") then return false end
     expected_switch = index
     quiet_until = mp.get_time() + 3
@@ -797,7 +917,7 @@ local function host_state_msg(ev, by, pos, paused, speed)
              pos = pos or mp.get_property_number("time-pos"),
              paused = paused,
              speed = speed or mp.get_property_number("speed", 1),
-             dur = mp.get_property_number("duration"), file = mp.get_property("filename"),
+             dur = mp.get_property_number("duration"), file = media_name(),
              pl = mp.get_property_number("playlist-pos"),
              wait = holding and wait_list or nil,
              countdown = countdown_end and math.max(0, math.ceil(countdown_end - mp.get_time())) or nil }
@@ -923,7 +1043,7 @@ local function on_guest_message(id, m)
             if other_id ~= id and other.name == name then name = name .. " (" .. id .. ")" end
         end
         if name == my_name then name = name .. " (" .. id .. ")" end
-        g.name, g.v = name, m.v
+        g.name, g.v, g.torrent = name, m.v, m.torrent == true
         if m.v ~= PROTOCOL then
             osd(T("old_version", name))
             return
@@ -936,6 +1056,8 @@ local function on_guest_message(id, m)
         s.you = name  -- the guest learns its name in the room (it may have been made unique)
         if s.pos then send(id, s) else send(id, { t = "welcome", you = name }) end
         send_files(id)
+        send_torrent(id)
+        if check then send(id, { t = "check", on = true }) end
         set_status("hosting")
     elseif m.t == "ping" then
         send(id, { t = "pong", id = m.id })
@@ -945,6 +1067,9 @@ local function on_guest_message(id, m)
         g.pos_at = mp.get_time()  -- not g.at: any message refreshes that, and a ping comes just before this
         g.paused = m.paused == true
         g.rtt = type(m.rtt) == "number" and m.rtt or nil
+    elseif m.t == "check" and type(m.r) == "table" then
+        local function num(v) return type(v) == "number" and v >= 0 and v < 1e12 and v or nil end
+        g.check = { speed = num(m.r.speed), need = num(m.r.need), peers = num(m.r.peers), ["local"] = m.r["local"] == true }
     elseif m.t == "wait" then
         local r = (m.reason == "buffering" or m.reason == "loading") and m.reason or nil
         if r ~= g.wait then g.wait, g.wait_since, g.gave_up = r, mp.get_time(), nil end
@@ -1022,6 +1147,11 @@ local function on_host_message(m)
         host_files = (port and port >= 1 and port <= 65535) and { names = names, port = port } or nil
         add_streams()
         refresh_menu()
+    elseif m.t == "torrent" then
+        on_room_torrent(m)
+    elseif m.t == "check" then
+        check_wanted = m.on == true
+        if check_wanted then start_check() else stop_check() end
     elseif m.t == "notice" and type(m.name) == "string" then
         if m.key == "joined" then osd(T("joined", m.name))
         elseif m.key == "left" then osd(T("member_left", m.name))
@@ -1032,15 +1162,20 @@ local function on_host_message(m)
         -- Host data ends up in labels and the menu: keep only fields of the expected types.
         local list = {}
         local function num(v) return type(v) == "number" and v or nil end
+        local function check_of(c)
+            if type(c) ~= "table" then return nil end
+            return { speed = num(c.speed), need = num(c.need), peers = num(c.peers), ["local"] = c["local"] == true }
+        end
         for _, e in ipairs(m.members) do
             if type(e) == "table" and type(e.name) == "string" and #list < 500 then
                 list[#list + 1] = { name = e.name, file = type(e.file) == "string" and e.file or nil,
                                     pos = num(e.pos), off = num(e.off), paused = e.paused == true,
                                     host = e.host == true, stale = e.stale == true,
-                                    wait = type(e.wait) == "string" and e.wait or nil }
+                                    wait = type(e.wait) == "string" and e.wait or nil, check = check_of(e.check) }
             end
         end
         room = { control = m.control == "host" and "host" or "all", members = list }
+        check_room = type(m.check) == "table" and num(m.check.left) and { left = math.max(0, m.check.left) } or nil
         if before and before ~= room.control then
             osd(T("control_is", control_text(room.control)))
         end
@@ -1098,7 +1233,7 @@ end
 local function local_req(ev)
     local m = { t = "req", ev = ev, pos = mp.get_property_number("time-pos"), paused = mp.get_property_native("pause"),
                 speed = mp.get_property_number("speed", 1) / nudge, dur = mp.get_property_number("duration"),
-                file = mp.get_property("filename"), pl = mp.get_property_number("playlist-pos") }
+                file = media_name(), pl = mp.get_property_number("playlist-pos") }
     return m.pos and m
 end
 
@@ -1185,6 +1320,12 @@ local function stop()
     stop_share()
     cancel_downloads()
     stop_stream()
+    drop_room_torrent()
+    if role == "join" then
+        check_wanted, check_room = false, nil
+        stop_check()
+    end
+    sent_torrent = nil
     role, members, room, host_state, pending, switch_by, room_name = nil, {}, nil, nil, nil, nil, nil
     holding, wait_list, countdown_end, countdown_pending, host_files = false, {}, nil, false, nil
     set_status("off")
@@ -1239,7 +1380,7 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
             last_rx = mp.get_time()
             set_status("connected")
             osd(T("in_room"))
-            send("host", { t = "hello", v = PROTOCOL, name = my_name, cid = settings.cid })
+            send("host", { t = "hello", v = PROTOCOL, name = my_name, cid = settings.cid, torrent = true })
             if my_wait then report_wait() end
         end
     elseif kind == "disconnected" then
@@ -1348,8 +1489,11 @@ end
 
 ------------------------------------------------------------------ resume memory
 
--- Per folder of episodes: which file and where we were, while watching in a room.
+-- Per folder of episodes, or per torrent: which file and where we were, while watching in a room
+-- (torrents also alone, so the episode chooser can offer it).
 local function history_key()
+    local hash = engine_hash(mp.get_property("path"))
+    if hash then return "btih:" .. hash end
     local full = current_path()
     local dir = full and utils.split_path(full)
     return dir and dir:lower()
@@ -1361,8 +1505,8 @@ local function load_history()
 end
 
 function remember()
-    if not settings.resume_memory or not role then return end
-    local key, pos, name = history_key(), mp.get_property_number("time-pos"), mp.get_property("filename")
+    if not settings.resume_memory or not (role or engine_hash(mp.get_property("path"))) then return end
+    local key, pos, name = history_key(), mp.get_property_number("time-pos"), media_name()
     if not key or not pos or not name then return end
     local h = load_history()
     h[key] = { file = name, pos = pos, t = os.time() }
@@ -1375,8 +1519,11 @@ function remember()
     write_state(HISTORY_FILE, utils.format_json(h))
 end
 
+-- Also when a file is left (another episode or torrent opened), or its last seconds would be lost.
+mp.add_hook("on_unload", 50, function() remember() end)
+
 local function resume_to(e)
-    if e.file == mp.get_property("filename") then
+    if e.file == media_name() then
         mp.commandv("seek", e.pos, "absolute+exact")
         return
     end
@@ -1395,7 +1542,7 @@ function offer_resume()
     local key = history_key()
     local e = key and load_history()[key]
     if type(e) ~= "table" or type(e.file) ~= "string" or type(e.pos) ~= "number" then return end
-    if e.file == mp.get_property("filename") and math.abs(e.pos - (mp.get_property_number("time-pos") or 0)) < 30 then return end
+    if e.file == media_name() and math.abs(e.pos - (mp.get_property_number("time-pos") or 0)) < 30 then return end
     local ok, input = pcall(require, "mp.input")
     if not ok then return end
     input.select({
@@ -1533,11 +1680,14 @@ end)
 
 local function stream_prefix() return stream_port and ("http://127.0.0.1:" .. stream_port .. "/") end
 
--- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host get more.
+-- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host or
+-- from the torrent engine get more. A torrent stream's title is its file name, not the URL's tail.
 mp.add_hook("on_load", 50, function()
+    local url = mp.get_property("stream-open-filename", "")
     local prefix = stream_prefix()
-    if not prefix or o.stream_cache <= 0 then return end
-    if mp.get_property("stream-open-filename", ""):sub(1, #prefix) ~= prefix then return end
+    local torrent = engine_hash(url) ~= nil
+    if torrent then mp.set_property("file-local-options/force-media-title", basename(url)) end
+    if not (torrent or (prefix and url:sub(1, #prefix) == prefix)) or o.stream_cache <= 0 then return end
     mp.set_property("file-local-options/demuxer-max-bytes", math.floor(o.stream_cache * 3 / 4) .. "MiB")
     mp.set_property("file-local-options/demuxer-max-back-bytes", math.floor(o.stream_cache / 4) .. "MiB")
 end)
@@ -1549,10 +1699,7 @@ function add_streams()
     local have = {}
     for _, e in ipairs(mp.get_property_native("playlist") or {}) do have[basename(e.filename)] = true end
     for _, name in ipairs(host_files.names) do
-        if not have[name] then
-            local enc = name:gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)
-            mp.commandv("loadfile", prefix .. enc, "append")
-        end
+        if not have[name] then mp.commandv("loadfile", prefix .. pct(name), "append") end
     end
 end
 
@@ -1610,6 +1757,393 @@ mp.register_script_message("watch-together-stream", function(kind, a)
     elseif kind == "error" then
         osd(T("stream_failed", tostring(a)) .. "\n" .. T("dl_hint", host_files and host_files.port or o.share_port))
     end
+end)
+
+------------------------------------------------------------------ torrents
+
+local engine                -- torrent.ps1: {handle, ready, queue of commands sent once it is ready}
+local engine_jobs = {}      -- add job id -> {ok(hash, files), fail(text)}
+local job_seq = 0
+local pending_pick          -- finishes the episode chooser that is open now
+local check_after_pick      -- {hash, i}: the swarm check starts once this episode has loaded
+local replaced = {}         -- playlist names of opened magnets/.torrents; their entries go at the next start-file
+local tfile_job             -- guest: {hash, ok, fail, handle} while the host's .torrent downloads
+
+local VIDEO_EXT = {}
+for ext in ("mkv mp4 avi webm m4v mov ts m2ts wmv flv mpg mpeg ogv 3gp"):gmatch("%S+") do VIDEO_EXT[ext] = true end
+
+-- In mpv's config folder; %TEMP% without one.
+local function engine_exe()
+    local dir = state_file("watch_together_engine") or utils.join_path(os.getenv("TEMP") or ".", "watch-together-engine")
+    return utils.join_path(dir, "TorrServer.exe")
+end
+
+local function start_engine()
+    local args = ps_args("torrent.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Base", ENGINE_BASE,
+                         "-CacheMB", tostring(o.torrent_cache), "-WatchPid", tostring(mp.get_property_number("pid") or 0))
+    if o.torrent_url == "" then
+        for _, a in ipairs({ "-Exe", engine_exe(), "-Download", ENGINE.url, "-Sha256", ENGINE.sha256 }) do args[#args + 1] = a end
+    end
+    local h
+    h = mp.command_native_async({ name = "subprocess", args = args, playback_only = false, capture_stderr = true },
+        function(_, res)
+            if not engine or engine.handle ~= h then return end
+            engine = nil
+            mp.msg.warn("torrent.ps1 exited: " .. utils.format_json(res))
+            local jobs = engine_jobs
+            engine_jobs = {}
+            for _, job in pairs(jobs) do job.fail(T("engine_died")) end
+        end)
+    engine = { handle = h, ready = false, queue = {} }
+end
+
+-- The first command starts the engine (downloading it the first time); commands wait until it is up.
+local function engine_cmd(...)
+    if not engine then start_engine() end
+    local args = { "script-message", "watch-together-torrent-cmd", ... }
+    if engine.ready then mp.commandv(unpack(args)) else engine.queue[#engine.queue + 1] = args end
+end
+
+local function add_torrent(link, ok, fail)
+    job_seq = job_seq + 1
+    local id = tostring(job_seq)
+    engine_jobs[id] = { ok = ok, fail = fail }
+    engine_cmd("add", id, link)
+end
+
+-- TorrServer takes a local .torrent as a file:// link.
+local function file_url(path)
+    return "file:///" .. (path:gsub("\\", "/"):gsub("[^%w%-%._~/:]", function(c) return string.format("%%%02X", c:byte()) end))
+end
+
+-- "S1E2" before "S1E10".
+local function natural_key(s)
+    return (s:lower():gsub("%d+", function(d) return string.rep("0", 12 - #d) .. d end))
+end
+
+-- The engine's file list as playlist material: videos only (all files if there are none), in natural order.
+-- Names come from the torrent, so they only go into URLs (percent-encoded), comparisons and labels.
+local function torrent_files(list)
+    local all, videos = {}, {}
+    for _, f in ipairs(list) do
+        if type(f) == "table" and type(f.i) == "number" and f.i >= 1 and f.i == math.floor(f.i) and type(f.path) == "string" then
+            local name = f.path:match("[^/\\]+$")
+            if name and #name <= 255 and not name:find("%c") then
+                local e = { i = f.i, name = name, path = f.path, length = tonumber(f.length) or 0 }
+                all[#all + 1] = e
+                if VIDEO_EXT[(name:match("%.([^.]+)$") or ""):lower()] then videos[#videos + 1] = e end
+            end
+        end
+    end
+    local files = #videos > 0 and videos or all
+    table.sort(files, function(x, y) return natural_key(x.path) < natural_key(y.path) end)
+    return files
+end
+
+-- Which episode to start from; the one watched last is preselected and resumes where it stopped.
+-- Esc starts the preselected one: the file being opened waits for this answer.
+local function choose_episode(t, cb)
+    local h = load_history()["btih:" .. t.hash]
+    if type(h) ~= "table" or type(h.file) ~= "string" or type(h.pos) ~= "number" then h = nil end
+    local default, items = 1, {}
+    for k, f in ipairs(t.files) do
+        items[k] = short(f.path, 80) .. " — " .. mb(f.length)
+        if h and f.name == h.file then
+            default = k
+            items[k] = items[k] .. " — " .. T("torrent_stopped_at", fmt_time(h.pos))
+        end
+    end
+    local picked = false
+    local function finish(k)
+        if picked then return end
+        picked, pending_pick = true, nil
+        k = (type(k) == "number" and t.files[k]) and k or default
+        cb(k, (h and t.files[k].name == h.file) and h.pos or nil)
+    end
+    local ok, input = pcall(require, "mp.input")
+    if #t.files == 1 or not ok then finish(default) return end
+    pending_pick = finish
+    input.select({ prompt = T("torrent_choose"), items = items, default_item = default,
+                   submit = finish, closed = function() finish(default) end })
+end
+
+-- A magnet or .torrent becomes the torrent's files in the playlist and the chosen episode plays.
+-- index: the playlist position of the link's own entry when mpv opened it (the files go right after it, the
+-- entry goes when the episode starts); nil from the menu, where the torrent replaces the playlist.
+local function open_torrent(link, index, done)
+    if mp.get_property_native("platform") ~= "windows" then osd(T("windows_only")) done() return end
+    mp.osd_message(T("torrent_opening"), 90)
+    local tfile = not link:match("^magnet:") and link or nil
+    add_torrent(tfile and file_url(tfile) or link, function(hash, list)
+        local files = torrent_files(list)
+        mp.osd_message("", 0)
+        if #files == 0 then osd(T("torrent_empty")) done() return end
+        local t = torrents[hash] or {}
+        t.hash, t.magnet, t.tfile, t.files = hash, not tfile and link or nil, tfile, files
+        torrents[hash] = t
+        if index then
+            for k, f in ipairs(files) do mp.commandv("loadfile", engine_url(hash, f), "insert-at", tostring(index + k)) end
+        end
+        choose_episode(t, function(k, resume_pos)
+            pending_resume = resume_pos
+            if o.torrent_check > 0 then
+                -- Everyone opens it paused and measures the swarm until someone presses play.
+                check_after_pick = { hash = hash, i = files[k].i }
+                mp.set_property_native("pause", true)
+            end
+            if index then
+                mp.commandv("playlist-play-index", tostring(index + k))
+            else
+                mp.commandv("loadfile", engine_url(hash, files[k]), "replace")
+                for j, f in ipairs(files) do
+                    if j < k then mp.commandv("loadfile", engine_url(hash, f), "insert-at", tostring(j - 1))
+                    elseif j > k then mp.commandv("loadfile", engine_url(hash, f), "append") end
+                end
+            end
+            done()
+        end)
+    end, function(err)
+        osd(T("torrent_failed", err))
+        done()
+    end)
+end
+
+-- Magnets and .torrent files from the command line, drag and drop or a playlist. mpv takes a magnet for a
+-- relative path: it puts the working folder in front and turns its slashes into backslashes ("udp://x"
+-- becomes "udp:\x"). A magnet holds no backslashes of its own, so they are undone here.
+mp.add_hook("on_load", 9, function(hook)
+    local link = mp.get_property("stream-open-filename", "")
+    local magnet = link:match("(magnet:%?.*)$")
+    if magnet then
+        link = magnet:gsub("\\", "/"):gsub("=(%a[%w+.-]*):/(%w)", "=%1://%2")
+    else
+        if is_url(link) or not link:lower():match("%.torrent$") then return end
+        link = utils.join_path(mp.get_property("working-directory", ""), link)
+        if not utils.file_info(link) then return end
+    end
+    local index = mp.get_property_number("playlist-pos", 0)
+    replaced[mp.get_property("playlist/" .. index .. "/filename") or link] = true
+    hook:defer()
+    open_torrent(link, index, function() hook:cont() end)
+end)
+
+mp.register_script_message("watch-together-open-torrent", function()
+    if role == "join" then return end
+    mp.commandv("update-clipboard", "text")
+    local text = (mp.get_property("clipboard/text") or ""):match("^%s*(.-)%s*$")
+    text = text:gsub('^"(.*)"$', "%1")  -- Explorer's "Copy as path" adds quotes
+    if text:match("^magnet:%?") or (text:lower():match("%.torrent$") and utils.file_info(text)) then
+        open_torrent(text, nil, function() end)  -- what plays now keeps playing until an episode is picked
+    else
+        osd(T("bad_torrent_clipboard"))
+    end
+end)
+
+-- Answers the open episode chooser: for tests, or an input.conf binding.
+mp.register_script_message("watch-together-pick", function(k)
+    if not pending_pick then return end
+    local ok, input = pcall(require, "mp.input")
+    if ok and input.terminate then input.terminate() end
+    if pending_pick then pending_pick(tonumber(k)) end
+end)
+
+-- From torrent.ps1: engine <bytes> <total> | ready | files <id> <hash> <json> | stat <hash> <B/s> <peers> <seeders> | error <id> <text>
+mp.register_script_message("watch-together-torrent", function(kind, a, b, c)
+    if not engine then return end
+    if kind == "engine" then
+        local done, total = tonumber(a) or 0, tonumber(b) or 0
+        if total > 0 then mp.osd_message(T("engine_progress", math.floor(done * 100 / total), mb(done), mb(total)), 2) end
+    elseif kind == "ready" then
+        engine.ready = true
+        for _, args in ipairs(engine.queue) do mp.commandv(unpack(args)) end
+        engine.queue = {}
+    elseif kind == "files" then
+        local job = engine_jobs[a]
+        engine_jobs[a] = nil
+        local list = utils.parse_json(c or "")
+        if not job then return end
+        if type(b) == "string" and #b == 40 and b:match("^%x+$") and type(list) == "table" then job.ok(b:lower(), list)
+        else job.fail("bad answer from the engine") end
+    elseif kind == "stat" then
+        if not check or check.hash ~= a then return end
+        check.peers = tonumber(c) or check.peers
+        -- The first seconds only find and connect peers: they would understate the speed.
+        if mp.get_time() - check.started >= 5 then
+            check.sum = check.sum + (tonumber(b) or 0) * 8
+            check.n = check.n + 1
+        end
+    elseif kind == "error" then
+        local job = a and engine_jobs[a]
+        engine_jobs[a or ""] = nil
+        if job then job.fail(tostring(b)) else osd(T("torrent_failed", tostring(b))) end
+    end
+end)
+
+-- Host: which torrent the room watches (none when the host plays something else). A .torrent goes to
+-- the guests through the share port, a magnet as it is.
+function send_torrent(target)
+    if role ~= "host" then return end
+    local t = torrents[engine_hash(mp.get_property("path")) or ""]
+    local msg = { t = "torrent" }
+    if t then msg.hash, msg.magnet, msg.tfile = t.hash, t.magnet, (t.tfile and settings.share_files) or nil end
+    mp.set_property("user-data/watch-together/torrent-file", t and t.tfile or "")
+    mp.set_property("user-data/watch-together/torrent-name", t and t.tfile and (t.hash .. ".torrent") or "")
+    sent_torrent = t and t.hash or ""
+    send(target, msg)
+    if not t then return end
+    for id, g in pairs(members) do
+        if (target == "*" or target == id) and g.v == PROTOCOL and not g.torrent then osd(T("old_torrent", g.name)) end
+    end
+end
+
+-- Guest: the room's torrent episodes leave the playlist; the one playing now goes at the next file.
+function drop_room_torrent()
+    if not room_torrent then return end
+    local hash = room_torrent.hash
+    room_torrent = nil
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local list = mp.get_property_native("playlist") or {}
+    for i = #list, 1, -1 do
+        if engine_hash(list[i].filename) == hash then
+            if i - 1 == pos then replaced[list[i].filename] = true else mp.commandv("playlist-remove", tostring(i - 1)) end
+        end
+    end
+end
+
+-- Episodes this guest has neither as a file nor as a stream go in as streams from its own engine;
+-- follow_file then finds them by name like any other file, and a local copy still wins.
+local function add_torrent_entries(t)
+    local have = {}
+    for _, e in ipairs(mp.get_property_native("playlist") or {}) do
+        have[basename(e.filename)] = true
+        if engine_hash(e.filename) == t.hash then replaced[e.filename] = nil end  -- wanted again
+    end
+    for _, f in ipairs(t.files) do
+        if not have[f.name] then mp.commandv("loadfile", engine_url(t.hash, f), "append") end
+    end
+end
+
+-- The host's .torrent, from its share port into %TEMP%\watch-together. The name carries our pid, so two
+-- players on one PC never share the file; it is deleted once the engine has read it.
+local function fetch_tfile(hash, ok, fail)
+    local name, dir = hash .. ".torrent", utils.join_path(os.getenv("TEMP") or ".", "watch-together")
+    local save_as = hash .. "-" .. (mp.get_property_number("pid") or 0) .. ".torrent"
+    os.remove(utils.join_path(dir, save_as))  -- fetch.ps1 never replaces a file
+    local h
+    h = mp.command_native_async({ name = "subprocess", playback_only = false, capture_stderr = true,
+        args = ps_args("fetch.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Address", joined_address,
+                       "-Port", tostring(host_files.port), "-Name", name, "-Dir", dir, "-Who", room_name or my_name,
+                       "-Event", "watch-together-tfile", "-SaveAs", save_as),
+    }, function()
+        -- "done" can arrive just after the process has exited; no answer at all means it failed.
+        mp.add_timeout(0.5, function()
+            if tfile_job and tfile_job.handle == h then
+                local j = tfile_job
+                tfile_job = nil
+                j.fail()
+            end
+        end)
+    end)
+    tfile_job = { hash = hash, ok = ok, fail = fail, handle = h }
+end
+
+-- From fetch.ps1: progress <name> <bytes> <total> | done <name> <path> | error <name> <text>
+mp.register_script_message("watch-together-tfile", function(kind, name, a)
+    local j = tfile_job
+    if not j or name ~= j.hash .. ".torrent" then return end
+    if kind == "done" and type(a) == "string" then
+        tfile_job = nil
+        j.ok(a)
+    elseif kind == "error" then
+        tfile_job = nil
+        j.fail()
+    end
+end)
+
+-- Guest: the host watches this torrent (or none). Peer data reaches the engine only as a link inside
+-- JSON, never as an mpv command, and the engine's hash must be the one the host announced.
+function on_room_torrent(m)
+    local hash = type(m.hash) == "string" and m.hash:lower() or nil
+    if hash and not (#hash == 40 and hash:match("^%x+$")) then return end
+    if room_torrent and room_torrent.hash == hash then return end
+    drop_room_torrent()
+    if not hash or mp.get_property_native("platform") ~= "windows" then return end
+    room_torrent = { hash = hash }
+    local magnet = type(m.magnet) == "string" and #m.magnet <= 8192 and m.magnet:match("^magnet:%?[^%s%c]*$")
+                   or ("magnet:?xt=urn:btih:" .. hash)
+    osd(T("torrent_room"))
+    local function add(link, fallback, tmp)
+        add_torrent(link, function(h, list)
+            if tmp then os.remove(tmp) end
+            if not room_torrent or room_torrent.hash ~= hash then return end
+            if h ~= hash then
+                if fallback then add(fallback) else osd(T("torrent_failed", "wrong torrent")) end
+                return
+            end
+            local t = torrents[h] or { hash = h }
+            t.files = torrent_files(list)
+            torrents[h] = t
+            add_torrent_entries(t)
+            osd(T("torrent_ready"))
+            if host_state then mp.add_timeout(0.5, apply_host_state) end
+        end, function(err)
+            if tmp then os.remove(tmp) end
+            if not room_torrent or room_torrent.hash ~= hash then return end
+            if fallback then add(fallback) else osd(T("torrent_failed", err)) end
+        end)
+    end
+    if m.tfile == true and host_files and joined_address then
+        fetch_tfile(hash, function(path) add(file_url(path), magnet, path) end, function() add(magnet) end)
+    else
+        add(magnet)
+    end
+end
+
+-- This player's part of the swarm check: the torrent's download speed against the episode's bitrate.
+-- The host's check runs while the room stays paused; guests measure while the host says so.
+function start_check()
+    stop_check()
+    if role == "join" and not check_wanted then return end
+    local hash, i = engine_hash(mp.get_property("path"))
+    local now = mp.get_time()
+    check = { started = now, ends = now + math.max(o.torrent_check, 5), sum = 0, n = 0 }
+    if hash then
+        check.hash = hash
+        for _, f in ipairs(torrents[hash] and torrents[hash].files or {}) do
+            if f.i == i then check.length = f.length end
+        end
+        engine_cmd("probe", hash)
+    else
+        check["local"] = current_path() ~= nil
+    end
+    if role == "host" then send("*", { t = "check", on = true }) end
+    update_panel()
+end
+
+function stop_check()
+    if not check then return end
+    local had = check
+    check = nil
+    if had.hash and engine then engine_cmd("probe-stop") end
+    if role == "host" then send("*", { t = "check", on = false }) end
+    update_panel()
+end
+
+-- Bits per second: what the episode needs on average, and what the swarm gave after the first seconds.
+function check_result()
+    if not check then return nil end
+    if check["local"] then return { ["local"] = true } end
+    local r = { peers = check.peers }
+    local dur = mp.get_property_number("duration")
+    if check.length and check.length > 0 and dur and dur > 0 then r.need = check.length * 8 / dur end
+    if check.n > 0 then r.speed = check.sum / check.n end
+    return r
+end
+
+mp.register_script_message("watch-together-check", function()
+    if role == "join" or not engine_hash(mp.get_property("path")) then return end
+    if not mp.get_property_native("pause") then mp.set_property_native("pause", true) end
+    start_check()
 end)
 
 ------------------------------------------------------------------ settings
@@ -1718,6 +2252,8 @@ if o.auto_update then mp.add_timeout(3, function() check_update(false) end) end
 ------------------------------------------------------------------ local changes
 
 mp.observe_property("pause", "bool", function(_, paused)
+    -- Playing ends the swarm check, whoever pressed play (a guest's play reaches the host as our own unpause).
+    if paused == false and check and role ~= "join" then stop_check() end
     if paused == expected_pause then expected_pause = nil return end
     local_action("pause")
     refresh_menu()
@@ -1758,17 +2294,39 @@ mp.register_event("file-loaded", function()
         switch_by = nil
         -- Pausing right here would stall that old-audio play-out, so the count starts at playback-restart.
         countdown_pending = ended_by_itself and settings.countdown and status == "hosting"
+        -- The torrent first: guests must know the room's torrent before they look for its file.
+        if (engine_hash(mp.get_property("path")) or "") ~= sent_torrent then send_torrent("*") end
         if status == "hosting" or status == "listening" then broadcast("file", by) end
         send_files("*")
     elseif role == "join" then
         if followed then apply_host_state()
         elseif ended_by_itself then keep_file_until = mp.get_time() + 3  -- the host moves on in a moment
         else local_action("file") end
+        if check_wanted then start_check() end  -- measure the episode we are on now
+    end
+    -- The swarm check belongs to the episode it was started on.
+    local hash, index = engine_hash(mp.get_property("path"))
+    if role ~= "join" then
+        if check and check.hash ~= hash then stop_check() end
+        if check_after_pick and check_after_pick.hash == hash and check_after_pick.i == index then start_check() end
+        check_after_pick = nil
     end
     refresh_menu()
 end)
 
-mp.register_event("start-file", function() loading_since = mp.get_time() end)
+mp.register_event("start-file", function()
+    loading_since = mp.get_time()
+    -- An opened magnet or .torrent has turned into the torrent's files: its own entry goes.
+    if not next(replaced) then return end
+    local pos = mp.get_property_number("playlist-pos", -1)
+    local list = mp.get_property_native("playlist") or {}
+    for i = #list, 1, -1 do
+        if replaced[list[i].filename] and i - 1 ~= pos then
+            replaced[list[i].filename] = nil
+            mp.commandv("playlist-remove", tostring(i - 1))
+        end
+    end
+end)
 mp.register_event("end-file", function(e)
     loading_since = nil  -- also when a file fails to open
     eof_advance = e.reason == "eof"
@@ -1822,8 +2380,9 @@ mp.add_periodic_timer(1, function()
         refresh_menu()  -- members' files and pauses; unchanged menus are not rewritten
     elseif role == "join" and (status == "connected" or status == "lost") then
         send("host", { t = "ping", id = mp.get_time() })
-        send("host", { t = "status", file = mp.get_property("filename"), pos = mp.get_property_number("time-pos"),
+        send("host", { t = "status", file = media_name(), pos = mp.get_property_number("time-pos"),
                        paused = mp.get_property_native("pause"), rtt = rtt })
+        if check then send("host", { t = "check", r = check_result() }) end
         if status == "connected" and mp.get_time() - last_rx > 6 then
             end_nudge()
             set_status("lost")

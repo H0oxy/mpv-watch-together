@@ -51,3 +51,21 @@ Porthole connects Steam friends but exposes no API. Steam stores the persona nam
 ## Updates from GitHub releases, with a question
 
 The user asked for a check at every mpv start and a question before installing. Updates come from releases, not from every push to `main`, so a half-done commit never reaches users. Files are downloaded to a temp folder and copied only when all downloads succeeded and `main.lua` is present. The new code runs after the next mpv start, because the loaded script cannot replace itself.
+
+## Torrent mode: TorrServer, downloaded on first use
+
+The user wanted to watch without anyone having the file beforehand: the host opens a magnet or a .torrent, and everyone watches while it downloads.
+
+- **Every player downloads from the swarm itself.** The host sends only the magnet (or the .torrent), never the video. Streaming from the host would cap everyone at the host's upload and at the Porthole tunnel (about 38 Mbit/s on one real link), and would stall when the host's own download does.
+- **An existing engine, not our own client.** A BitTorrent client in PowerShell 5.1 would need trackers, DHT, the peer protocol, metadata from magnets, piece hashing, and piece priority around the playback position: thousands of lines, and slow. Options looked at:
+  - TorrServer: a single Go exe that serves a torrent's files over HTTP with Range, fetches the pieces around each request first, keeps its cache in RAM, and has an HTTP API for files and speed. Chosen.
+  - webtorrent-cli or peerflix: need Node.js.
+  - aria2: torrents, but no HTTP streaming of an unfinished file.
+  - qBittorrent: writes to disk, and we would still have to serve a growing file.
+- **Downloaded on first use, not committed.** The exe is about 36 MB. In the repo, every plugin update through `update.ps1` would copy it again, the history would grow with each engine version, and the GPL would require shipping its source or an offer. Downloading it means users who never open a torrent never get it. It comes only from the project's GitHub release, and runs only with the SHA256 pinned in `main.lua`; a new engine version comes with a plugin release. This is the one exception to "nothing beyond mpv and PowerShell", and it applies only to torrent mode.
+- **RAM only** (the user's choice): `useDisk = false`, `torrent_cache` 256 MB in the engine plus mpv's `stream_cache`. A far rewind downloads again.
+- **The mode follows what the host opens** (the user's choice): local files make a local room, a torrent makes a torrent room; there is no switch.
+- **Swarm check when an episode is picked** (the user's choice): it runs automatically, everyone measures their own download against the episode's bitrate, and play ends it. It doubles as a preload. The 1.5x margin for ✓ is our call: the bitrate is an average, and action scenes go above it.
+- **A .torrent reaches guests through the existing share port.** The file keeps its trackers. Without the port, guests fall back to the hash and find peers through DHT and TorrServer's default trackers.
+
+TorrServer facts used here were checked in its source and in the GitHub API on 2026-11-15 (release Silo.2): the flags, the API, `file_stats` ids, the defaults, and the idle close. A live run with the real engine has not been done yet; see torrent.md, Tests.

@@ -10,6 +10,7 @@ The menu and on-screen messages follow the Windows display language: Russian on 
 - mpv 0.40 or newer. The script adds its items to mpv's built-in right-click menu. Tested on mpv 0.41.
 - Steam and Porthole on every PC.
 - The same video files on every PC, or a guest without them watches the host's files over the network (see [Episodes a guest doesn't have](#episodes-a-guest-doesnt-have)). For a series, load the episodes in the same order.
+- Or no files at all: the host opens a magnet link or a .torrent, and everyone watches while it downloads (see [Watching a torrent](#watching-a-torrent)).
 
 ## Install
 
@@ -75,6 +76,26 @@ The file comes over four connections at once, because through Porthole one conne
 
 mpv keeps up to 512 MB of such an episode in RAM: 384 MB ahead and 128 MB behind, which is about two and a half minutes of 4K ahead. Short slowdowns in the tunnel go unnoticed, and a short rewind plays without loading again. The `stream_cache` setting changes the size.
 
+## Watching a torrent
+
+Instead of files on disk, the host can open a magnet link or a .torrent. Nobody needs the video beforehand, the host included: every player downloads the episode it plays from the torrent while it plays, and keeps it only in memory.
+
+1. Copy the magnet link, or the path of a .torrent file (Shift + right-click on the file → Copy as path). In mpv, right-click → Watch together → Open torrent from clipboard (Совместный просмотр → Открыть торрент из буфера обмена). Dragging a .torrent onto mpv or starting `mpv "magnet:?…"` works too.
+2. The first time, the plugin downloads its torrent engine, [TorrServer](https://github.com/YouROK/TorrServer) (about 36 MB), from that project's GitHub release, and runs it only if it matches the checksum built into the plugin. Windows may ask whether TorrServer may use the network. Allow it: if you don't, it still works, but fewer peers can connect to you and the download is slower.
+3. mpv lists the torrent's videos. Pick the episode to start from. The one you watched last is preselected, with the time you stopped at, and continues from there. All episodes go into the playlist, but only the one playing is downloaded. Esc starts the preselected one.
+4. The episode opens paused, and the swarm check (Проверка раздачи) runs in the top right corner for 20 seconds. Each player shows how fast the torrent downloads compared with what the video needs:
+   - ✓ fast enough, with a margin;
+   - ⚠ just about enough, short pauses are likely;
+   - ✗ too slow, expect frequent pauses.
+
+   Press Space whenever you are ready; that ends the check. Watch together → Check the torrent (Проверить раздачу) runs it again.
+
+In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly.
+
+A jump to a part that hasn't been downloaded yet makes the engine fetch that part first, so the room waits a few seconds ("Waiting for: Alex (buffering)"). How long depends on the swarm. A torrent needs more download speed than the video's bitrate on every PC; the check shows whether there is enough.
+
+Memory: up to 256 MB in the engine (`torrent_cache`) plus mpv's 512 MB cache (`stream_cache`). Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`, and `uninstall.bat` removes it.
+
 ## How sync works
 
 The host's player is the reference. A guest's action goes to the host as a request; the host applies it and sends the result to everyone, so two people acting at once still end up in the same place. Once a second the host sends its position. A guest a little off (up to half a second) catches up by playing up to 5% faster or slower for a few seconds, without a jump and at the same pitch. Only a bigger gap is fixed with a seek. A guest who prefers the old way turns off Settings → Catch up with the room smoothly (Настройки → Догонять комнату плавно): then any drift over 0.3 seconds is fixed with a seek. When seeking during playback, each player aims ahead by its own measured seek time, so it lands level with the others instead of behind.
@@ -118,7 +139,11 @@ resume_memory=yes   # remember episode and time, offer them when hosting again
 share_files=yes     # let guests download episodes from the host
 share_port=47801    # port for those downloads
 download_dir=       # a fixed folder for downloads; empty = the menu choice (open video's folder or Downloads)
-stream_cache=512    # MB of RAM for an episode watched from the host: 3/4 ahead, 1/4 behind; 0 = mpv's default
+stream_cache=512    # MB of RAM for an episode watched from the host or a torrent: 3/4 ahead, 1/4 behind; 0 = mpv's default
+torrent_port=47802  # local port of the torrent engine (it listens on 127.0.0.1 only)
+torrent_cache=256   # MB of RAM the torrent engine keeps
+torrent_url=        # use a TorrServer you already run, e.g. http://127.0.0.1:8090; empty = the plugin's own
+torrent_check=20    # seconds of the swarm check after picking an episode; 0 = off
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 
@@ -128,7 +153,7 @@ Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). S
 
 ## How it works
 
-`watch-together/main.lua` runs inside mpv: menu, sync logic, messages. mpv scripts cannot open network sockets, so it starts `watch-together/bridge.ps1`, which connects to mpv's JSON IPC pipe and relays lines between mpv and the other PCs. `sysinfo.ps1` reads the Windows language and the Steam name at startup, `update.ps1` checks and installs releases, and `share.ps1` / `fetch.ps1` send and receive episodes. For watching from the host, `stream.ps1` runs on the guest as a small local HTTP server: mpv plays from it, and it fetches the file from the host's `share.ps1` in pieces over four connections. The protocol and the design decisions are in [docs/](docs/).
+`watch-together/main.lua` runs inside mpv: menu, sync logic, messages. mpv scripts cannot open network sockets, so it starts `watch-together/bridge.ps1`, which connects to mpv's JSON IPC pipe and relays lines between mpv and the other PCs. `sysinfo.ps1` reads the Windows language and the Steam name at startup, `update.ps1` checks and installs releases, and `share.ps1` / `fetch.ps1` send and receive episodes. For watching from the host, `stream.ps1` runs on the guest as a small local HTTP server: mpv plays from it, and it fetches the file from the host's `share.ps1` in pieces over four connections. For torrents, `torrent.ps1` downloads and starts TorrServer and talks to its HTTP API; mpv plays each episode straight from TorrServer. The protocol and the design decisions are in [docs/](docs/).
 
 Tests start several mpv instances on one PC (`ffmpeg` must be on PATH to generate the test videos):
 
@@ -137,6 +162,7 @@ powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\path\to\mpv.exe
 powershell -ExecutionPolicy Bypass -File tests\scale.ps1 -Mpv C:\path\to\mpv.exe -GuestCount 20
 powershell -ExecutionPolicy Bypass -File tests\buffering.ps1 -Mpv C:\path\to\mpv.exe   # needs python
 powershell -ExecutionPolicy Bypass -File tests\features.ps1 -Mpv C:\path\to\mpv.exe
+powershell -ExecutionPolicy Bypass -File tests\torrent.ps1 -Mpv C:\path\to\mpv.exe     # needs python, no network
 ```
 
 To measure a real tunnel, run `tests\speed.ps1 -Name "<file name>"` on a guest's PC while the host has a room open with that file in its playlist. It reports the download speed from the host with 1, 2, 4 and 8 connections.
