@@ -41,6 +41,9 @@ Symptom: after a guest's seek during playback, the others were up to about 0.3 s
 ## Test artifact: sequential reads look like drift
 Symptom: with 21 players, "spread" was up to 0.4 s although the players were in sync. Cause: the test reads positions one by one, and playing players move during the reads. Fix: tests move each playing position back by the time since the first read.
 
+## Test artifact: the countdown pause read too early
+Symptom: features.ps1 "next episode starts paused for everyone" failed 2 runs in 6 with `pause` false on episode 2. Cause: the test read `pause` the moment both file names had changed, but the countdown pauses at the episode's first `playback-restart` (see "Countdown deadlock"), 60-90 ms later; a throwaway probe measured that gap on 3 of 3 episode changes. Fix: the test waits up to 2 s for the pause and then checks that the episode is still under 1.5 s in. Verified: features passed three runs in a row.
+
 ## Test artifact: throttling a stream showed no buffering
 Symptom: the guest played on for 30+ s at 6 KB/s, a sixth of the bitrate. Cause: with the server unthrottled at start, it pushed megabytes into the loopback TCP buffers, and mpv kept reading from them. `--demuxer-max-bytes` did not limit this, and mpv showed `Cache: 599s`. Fix: in the test, start the stream at a rate slightly above the bitrate with `--cache-secs=5`, then slow it down; buffering starts within seconds.
 

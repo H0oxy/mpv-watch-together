@@ -200,9 +200,12 @@ try {
     # Countdown: episode 1 ends by itself, episode 2 starts paused for everyone, then plays.
     $null = I $a @('seek', 596, 'absolute')
     $ok = Wait-Until { (I $a @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' } 15
-    $paused = (I $a @('get_property', 'pause')) -and (I $b @('get_property', 'pause'))
-    Check 'next episode starts paused for everyone' ($ok -and $paused) ("A {0} {1} B {2} {3}" -f (I $a @('get_property', 'filename')),
-        (I $a @('get_property', 'pause')), (I $b @('get_property', 'filename')), (I $b @('get_property', 'pause')))
+    # The pause comes at the episode's first frame (bugs.md, countdown deadlock), 60-90 ms after the file name
+    # changes: wait for it, but it must come before the episode has really started.
+    $paused = Wait-Until { (I $a @('get_property', 'pause')) -and (I $b @('get_property', 'pause')) } 2
+    $early = (I $a @('get_property', 'time-pos')) -lt 1.5
+    Check 'next episode starts paused for everyone' ($ok -and $paused -and $early) ("A {0} {1} at {2:N2} B {3} {4}" -f (I $a @('get_property', 'filename')),
+        (I $a @('get_property', 'pause')), (I $a @('get_property', 'time-pos')), (I $b @('get_property', 'filename')), (I $b @('get_property', 'pause')))
     $ok = Wait-Until { -not (I $a @('get_property', 'pause')) -and -not (I $b @('get_property', 'pause')) } 6
     Check 'countdown ends, everyone plays' $ok ''
 

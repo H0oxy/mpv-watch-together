@@ -107,7 +107,7 @@ Guest (`on_room_torrent`):
 - bad hashes and a magnet with a line break never reach the engine;
 - a guest's torrent log records the room torrent, its episodes and the check.
 
-Last run: 26/26.
+Last run: 27/27.
 
 ## Log
 

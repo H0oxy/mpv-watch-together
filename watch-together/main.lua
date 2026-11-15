@@ -1786,13 +1786,21 @@ function buffer.is_stream(url)
     return type(url) == "string" and (engine_hash(url) ~= nil or (prefix ~= nil and url:sub(1, #prefix) == prefix))
 end
 
--- 3/4 ahead, 1/4 behind, for the file playing now. Also while it plays: mpv takes new limits at once (a smaller
--- one stops reading ahead; what is already buffered stays until it has played).
+-- The chosen size goes 3/4 ahead, 1/4 behind, for the file playing now. When the RAM guard allows less, the
+-- part already watched shrinks first (down to 32 MB), and only then the part ahead (down to 96 MB). Also
+-- while it plays: mpv drops watched data over a smaller limit at once, while it still reads (not once the
+-- whole file is read); data ahead over a smaller limit stays until it has played, mpv only stops reading.
 function buffer.apply()
-    local b = buffer.mb()
+    local chosen, b = settings.buffer_mb, buffer.mb()
     if b <= 0 then return end
-    mp.set_property("file-local-options/demuxer-max-bytes", math.floor(b * 3 / 4) .. "MiB")
-    mp.set_property("file-local-options/demuxer-max-back-bytes", math.floor(b / 4) .. "MiB")
+    local ahead = math.floor(chosen * 3 / 4)
+    local back = chosen - ahead
+    if b < chosen then
+        back = math.max(32, math.min(back, b - ahead))
+        ahead = math.max(96, math.min(ahead, b - back))
+    end
+    mp.set_property("file-local-options/demuxer-max-bytes", ahead .. "MiB")
+    mp.set_property("file-local-options/demuxer-max-back-bytes", back .. "MiB")
 end
 
 -- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host or

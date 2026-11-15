@@ -169,8 +169,8 @@ An `on_load` hook gives these URLs (and torrent streams) the online buffer throu
 
 - **Size:** `settings.buffer_mb` comes from `stream_cache` (1536 by default) and is then set from the menu (Settings → Online buffer: 256 MB to 4 GB, `script-message watch-together-buffer <MB>`). It is saved with the other settings.
 - **RAM reports:** `torrent.ps1` and `stream.ps1`, whichever runs, send `watch-together-ram <free MB> <total MB>` every 5 s (`Win32_OperatingSystem`).
-- **The guard:** the buffer may use `used + free - reserve`. `used` is the current `demuxer-cache-state.total-bytes`, and `reserve` is `max(1024, 15 % of total)`. Below the chosen size, `buffer.ram_limit` becomes that, rounded down to 64 MB, at least 128 MB. It grows back only while `free` is 256 MB above the reserve, so a buffer near the line does not flip every 5 s. Each change goes straight into the playing stream's `file-local-options`: mpv stops reading ahead at a smaller limit, and what is already buffered stays until played. An OSD notice comes on the first cut and on the full restore. `ram_guard` (menu toggle, conf `ram_guard`) turns the guard off.
-- Tests: torrent.ps1 "the buffer choice reaches the playing stream", "low free RAM cuts the buffer", "free RAM again restores it" (fake RAM reports).
+- **The guard:** the buffer may use `used + free - reserve`. `used` is the current `demuxer-cache-state.total-bytes`, and `reserve` is `max(1024, 15 % of total)`. Below the chosen size, `buffer.ram_limit` becomes that, rounded down to 64 MB, at least 128 MB. It grows back only while `free` is 256 MB above the reserve, so a buffer near the line does not flip every 5 s. Each change goes straight into the playing stream's `file-local-options` through `buffer.apply()`. The part already watched gives way first: the back limit shrinks down to 32 MB before the part ahead loses anything, and that part goes down to 96 MB. Measured with mpv 0.41: a lower back limit drops the watched data at once (within 0.3 s, paused too), but only while the demuxer still reads; once the whole file is read, nothing is pruned. A lower ahead limit only stops reading, and what is buffered ahead stays until it has played. An OSD notice comes on the first cut and on the full restore. `ram_guard` (menu toggle, conf `ram_guard`) turns the guard off.
+- Tests: torrent.ps1 "the buffer choice reaches the playing stream", "a little short of RAM: the watched part shrinks first", "low free RAM cuts the buffer", "free RAM again restores it" (fake RAM reports).
 
 Why several connections: through Porthole one connection got 28 Mbit/s, 4 got 38, 8 got 44 (`tests\speed.ps1`, a real two-PC link). The tunnel caps the total, so more connections give less and less. One 4K episode (~19 Mbit/s) fits; several 4K guests share the cap. Loopback through `stream.ps1`: 188 MB/s, byte-identical for ranges at 0, 1, piece edges and the last byte, 416 past the end.
 
@@ -256,7 +256,7 @@ Spread is measured with every playing position moved back to the time of the fir
 Last results (mpv 0.41.0-dev, one PC):
 
 - e2e: 31/31 (2026-11-15). Timing-sensitive, and each failed once and passed on the next run: "soft sync off: small drift is a seek" (also on unchanged 1.5.4 code), "small drift caught up by speed" and "user speed change during a nudge".
-- features: 28/28 (2026-11-15). "next episode starts paused for everyone" failed once in four runs.
+- features: 28/28 (2026-11-15), three runs in a row after the fix of its countdown check (bugs.md, test artifact: the countdown pause read too early).
 - buffering: 8/8 (2026-11-15).
 - stream: 4/4 (2026-11-15).
 - torrent: 22/22 (2026-11-15).
