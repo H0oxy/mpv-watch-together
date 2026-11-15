@@ -38,7 +38,9 @@ local o = {
     share_files = true,     -- host: let guests download episodes from the host's playlist
     share_port = 47801,     -- host: port for those downloads (share it in Porthole next to port)
     download_dir = "",      -- guest: where downloads go; empty = next to the current file, else Downloads
-    stream_cache = 512,     -- guest: MB of RAM for an episode watched from the host, 3/4 ahead, 1/4 behind; 0 = mpv's own
+    stream_cache = 1536,    -- MB of mpv's buffer for a stream (torrent or host), 3/4 ahead, 1/4 behind; 0 = mpv's own.
+                            -- The menu choice (Settings) overrides it.
+    ram_guard = true,       -- shrink that buffer while free RAM runs low
     torrent_port = 47802,   -- local port of the torrent engine; it listens on 127.0.0.1 only
     torrent_cache = 256,    -- MB of RAM the torrent engine keeps; nothing is written to disk
     torrent_url = "",       -- a TorrServer that already runs, e.g. http://127.0.0.1:8090; empty = the plugin's own
@@ -88,6 +90,8 @@ local settings = {
     resume_memory = o.resume_memory,
     share_files = o.share_files,
     soft_sync = o.soft_sync,
+    buffer_mb = o.stream_cache,  -- mpv's buffer for streams, chosen in the menu
+    ram_guard = o.ram_guard,
     download_to = "video",  -- guest: "video" (the open video's folder) | "downloads"
     cid = "",               -- this player's id in rooms: a guest who comes back replaces its old connection
 }
@@ -95,6 +99,7 @@ for k, v in pairs(SETTINGS_FILE and read_state(SETTINGS_FILE) or {}) do
     if type(settings[k]) == type(v) then settings[k] = v end
 end
 if settings.download_to ~= "downloads" then settings.download_to = "video" end
+settings.buffer_mb = math.max(0, math.min(16384, math.floor(settings.buffer_mb)))
 
 local function save_settings()
     if SETTINGS_FILE then write_state(SETTINGS_FILE, utils.format_json(settings)) end
@@ -209,6 +214,13 @@ local STRINGS = {
         save_downloads = "В папку «Загрузки»",
         save_to_set = "Серии будут сохраняться: %s",
         more = "…и ещё %d",
+        buffer_menu = "Буфер онлайн-просмотра: %s",
+        buffer_now = "(сейчас %s, мало памяти)",
+        buffer_set = "Буфер онлайн-просмотра: %s",
+        buffer_guard = "Уменьшать, если мало памяти",
+        buffer_reduced = "Мало свободной памяти: буфер уменьшен до %s",
+        buffer_restored = "Память освободилась: буфер снова %s",
+        gb = "%s ГБ",
         open_torrent = "Открыть торрент из буфера обмена",
         bad_torrent_clipboard = "В буфере обмена нет magnet-ссылки или пути к .torrent",
         torrent_opening = "Торрент: получаю список файлов…",
@@ -330,6 +342,13 @@ local STRINGS = {
         save_downloads = "Downloads folder",
         save_to_set = "Episodes will be saved to: %s",
         more = "…and %d more",
+        buffer_menu = "Online buffer: %s",
+        buffer_now = "(now %s, low memory)",
+        buffer_set = "Online buffer: %s",
+        buffer_guard = "Shrink when memory is low",
+        buffer_reduced = "Low on free memory: buffer cut to %s",
+        buffer_restored = "Memory is free again: buffer back to %s",
+        gb = "%s GB",
         open_torrent = "Open torrent from clipboard",
         bad_torrent_clipboard = "No magnet link or .torrent path in the clipboard",
         torrent_opening = "Torrent: getting the file list…",
@@ -675,6 +694,29 @@ local function missing_files()
     return list
 end
 
+------------------------------------------------------------------ stream buffer
+
+-- mpv's buffer for streams (torrent episodes, episodes watched from the host). TorrServer itself fetches only
+-- 16 MB ahead of what mpv reads, so this buffer is what gets downloaded ahead.
+-- One table, not six locals: main.lua is at LuaJIT's limit of 200 locals in the main chunk.
+local buffer = {
+    CHOICES = { 256, 512, 1024, 1536, 2048, 3072, 4096 },
+    ram_limit = nil,        -- MB the RAM guard allows the buffer now; nil = no limit
+}
+
+function buffer.mb()
+    local b = settings.buffer_mb
+    if b > 0 and settings.ram_guard and buffer.ram_limit then b = math.min(b, buffer.ram_limit) end
+    return b
+end
+
+function buffer.text(m)
+    if m < 1024 then return T("mb", m) end
+    local s = string.format("%g", math.floor(m / 1024 * 10 + 0.5) / 10)
+    if lang == "ru" then s = s:gsub("%.", ",") end
+    return T("gb", s)
+end
+
 ------------------------------------------------------------------ menu
 
 -- Positions are left out on purpose: rewriting menu-data rebuilds the native menu, even while it is open.
@@ -747,8 +789,17 @@ local function menu_item()
         } }
         items[#items + 1] = { type = "submenu", title = T("download_menu"), submenu = sub }
     end
+    local buf = {}
+    for _, v in ipairs(buffer.CHOICES) do
+        buf[#buf + 1] = { title = buffer.text(v), cmd = "script-message watch-together-buffer " .. v, state = st(false, settings.buffer_mb == v) }
+    end
+    buf[#buf + 1] = { type = "separator" }
+    buf[#buf + 1] = { title = T("buffer_guard"), cmd = "script-message watch-together-setting ram_guard", state = st(false, settings.ram_guard) }
+    local buf_title = T("buffer_menu", buffer.text(settings.buffer_mb))
+    if buffer.mb() < settings.buffer_mb then buf_title = buf_title .. " " .. T("buffer_now", buffer.text(buffer.mb())) end
     items[#items + 1] = { type = "submenu", title = T("settings"), submenu = {
         { title = T("set_soft"), cmd = "script-message watch-together-setting soft_sync", state = st(false, settings.soft_sync) },
+        { type = "submenu", title = buf_title, submenu = buf },
         { type = "separator" },
         { title = T("when_host"), state = { "disabled" } },
         { title = T("set_wait"), cmd = "script-message watch-together-setting wait_for_others", state = st(false, settings.wait_for_others) },
@@ -1730,16 +1781,61 @@ end)
 
 local function stream_prefix() return stream_port and ("http://127.0.0.1:" .. stream_port .. "/") end
 
+function buffer.is_stream(url)
+    local prefix = stream_prefix()
+    return type(url) == "string" and (engine_hash(url) ~= nil or (prefix ~= nil and url:sub(1, #prefix) == prefix))
+end
+
+-- 3/4 ahead, 1/4 behind, for the file playing now. Also while it plays: mpv takes new limits at once (a smaller
+-- one stops reading ahead; what is already buffered stays until it has played).
+function buffer.apply()
+    local b = buffer.mb()
+    if b <= 0 then return end
+    mp.set_property("file-local-options/demuxer-max-bytes", math.floor(b * 3 / 4) .. "MiB")
+    mp.set_property("file-local-options/demuxer-max-back-bytes", math.floor(b / 4) .. "MiB")
+end
+
 -- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host or
--- from the torrent engine get more. A torrent stream's title is its file name, not the URL's tail.
+-- from the torrent engine get the stream buffer. A torrent stream's title is its file name, not the URL's tail.
 mp.add_hook("on_load", 50, function()
     local url = mp.get_property("stream-open-filename", "")
-    local prefix = stream_prefix()
-    local torrent = engine_hash(url) ~= nil
-    if torrent then mp.set_property("file-local-options/force-media-title", basename(url)) end
-    if not (torrent or (prefix and url:sub(1, #prefix) == prefix)) or o.stream_cache <= 0 then return end
-    mp.set_property("file-local-options/demuxer-max-bytes", math.floor(o.stream_cache * 3 / 4) .. "MiB")
-    mp.set_property("file-local-options/demuxer-max-back-bytes", math.floor(o.stream_cache / 4) .. "MiB")
+    if engine_hash(url) then mp.set_property("file-local-options/force-media-title", basename(url)) end
+    if buffer.is_stream(url) then buffer.apply() end
+end)
+
+-- Free and total physical memory in MB, every 5 s from torrent.ps1 or stream.ps1 (whichever runs). The buffer
+-- may use what is free beyond a reserve of max(1 GB, 15 % of RAM) for everything else on the PC.
+mp.register_script_message("watch-together-ram", function(free, total)
+    free, total = tonumber(free), tonumber(total)
+    if not free or not total or total <= 0 or settings.buffer_mb <= 0 then return end
+    local reserve = math.max(1024, total * 0.15)
+    local state = mp.get_property_native("demuxer-cache-state")
+    local used = (type(state) == "table" and tonumber(state["total-bytes"]) or 0) / 1048576
+    local allowed = used + free - reserve
+    local limit = allowed < settings.buffer_mb and math.max(128, math.floor(allowed / 64) * 64) or nil
+    -- Growing back needs room to spare, or a buffer near the line would shrink and grow every 5 s.
+    if buffer.ram_limit and (not limit or limit > buffer.ram_limit) and free < reserve + 256 then return end
+    if limit == buffer.ram_limit then return end
+    local was = buffer.ram_limit
+    buffer.ram_limit = limit
+    tlog("ram: %d of %d MB free, buffer %s", free, total, limit and (limit .. " MB") or "as chosen")
+    if not settings.ram_guard then return end
+    if buffer.is_stream(mp.get_property("path")) then buffer.apply() end
+    if limit and not was then osd(T("buffer_reduced", buffer.text(limit)))
+    elseif not limit then osd(T("buffer_restored", buffer.text(settings.buffer_mb))) end
+    refresh_menu()
+end)
+
+mp.register_script_message("watch-together-buffer", function(v)
+    v = tonumber(v)
+    local known = false
+    for _, c in ipairs(buffer.CHOICES) do if c == v then known = true end end
+    if not known then return end
+    settings.buffer_mb = v
+    save_settings()
+    if buffer.is_stream(mp.get_property("path")) then buffer.apply() end
+    osd(T("buffer_set", buffer.text(v)) .. (buffer.mb() < v and (" " .. T("buffer_now", buffer.text(buffer.mb()))) or ""))
+    refresh_menu()
 end)
 
 -- Every host episode not in the playlist yet goes in as a stream, so follow_file finds it by name.
@@ -1811,12 +1907,16 @@ end)
 
 ------------------------------------------------------------------ torrents
 
+local check_after_pick      -- {hash, i}: the swarm check starts once this episode has loaded
+local replaced = {}         -- playlist names of opened magnets/.torrents; their entries go at the next start-file
+
+-- The rest of this section stays inside do ... end, so its locals end here: main.lua is at LuaJIT's limit of
+-- 200 locals in the main chunk.
+do
 local engine                -- torrent.ps1: {handle, ready, queue of commands sent once it is ready}
 local engine_jobs = {}      -- add job id -> {ok(hash, files), fail(text)}
 local job_seq = 0
 local pending_pick          -- finishes the episode chooser that is open now
-local check_after_pick      -- {hash, i}: the swarm check starts once this episode has loaded
-local replaced = {}         -- playlist names of opened magnets/.torrents; their entries go at the next start-file
 local tfile_job             -- guest: {hash, ok, fail, handle} while the host's .torrent downloads
 
 local VIDEO_EXT = {}
@@ -2232,10 +2332,13 @@ mp.register_script_message("watch-together-check", function()
     start_check()
 end)
 
+end  -- torrents
+
 ------------------------------------------------------------------ settings
 
 local SETTING_LABELS = { wait_for_others = "set_wait", countdown = "set_countdown",
-                         resume_memory = "set_resume", share_files = "set_share", soft_sync = "set_soft" }
+                         resume_memory = "set_resume", share_files = "set_share", soft_sync = "set_soft",
+                         ram_guard = "buffer_guard" }
 
 local function toggle_setting(key)
     if type(settings[key]) ~= "boolean" or not SETTING_LABELS[key] then return end
@@ -2245,6 +2348,7 @@ local function toggle_setting(key)
     osd(T(settings[key] and "setting_on" or "setting_off", T(SETTING_LABELS[key], arg)))
     if key == "wait_for_others" then update_hold() end
     if key == "soft_sync" and not settings.soft_sync then end_nudge() end
+    if key == "ram_guard" and buffer.is_stream(mp.get_property("path")) then buffer.apply() end
     if key == "countdown" and not settings.countdown and countdown_end then finish_countdown() end
     if key == "share_files" then
         if settings.share_files then start_share() else stop_share() end

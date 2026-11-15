@@ -96,6 +96,16 @@ try {
     $ok = Wait-Until { (Panel $a) -match "$yes A" } 10
     Check 'alone: the check shows a fast swarm as enough' $ok (Panel $a)
 
+    # The stream buffer: chosen in the menu, cut while free RAM runs low, back once memory is free again.
+    # (torrent.ps1 also reports the real free RAM every 5 s, so the fake reports repeat until they show.)
+    $null = I $a @('script-message', 'watch-together-buffer', '2048')
+    $ok = Wait-Until { (P $a 'demuxer-max-bytes') -eq 1536MB -and (P $a 'demuxer-max-back-bytes') -eq 512MB } 3
+    Check 'the buffer choice reaches the playing stream' $ok ("ahead={0} behind={1}" -f (P $a 'demuxer-max-bytes'), (P $a 'demuxer-max-back-bytes'))
+    $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '500', '8000'); (P $a 'demuxer-max-bytes') -eq 96MB } 5
+    Check 'low free RAM cuts the buffer' $ok ("ahead={0}" -f (P $a 'demuxer-max-bytes'))
+    $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '30000', '32000'); (P $a 'demuxer-max-bytes') -eq 1536MB } 5
+    Check 'free RAM again restores it' $ok ("ahead={0}" -f (P $a 'demuxer-max-bytes'))
+
     # Room: B (nothing of the torrent) and C (own episode 1) join and follow onto episode 2.
     $null = I $a @('script-message', 'watch-together-host'); Start-Sleep -Milliseconds 800
     $null = I $b @('script-message', 'watch-together-join'); $null = I $c @('script-message', 'watch-together-join')

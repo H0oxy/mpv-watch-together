@@ -163,7 +163,14 @@ Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and con
 
 `stream.ps1` answers one mpv request at a time; a new one (a seek) drops the old. It fetches 2 MB pieces with `length` over 4 connections at once and sends them to mpv in order; the first piece goes to mpv as it arrives. A piece whose connection breaks is asked for again from where it stopped, up to 3 times. Turning it off, leaving or losing the room stops `stream.ps1` and removes the stream entries.
 
-An `on_load` hook gives these URLs a bigger cache through `file-local-options`: `stream_cache` MB (512 by default), 3/4 as `demuxer-max-bytes`, 1/4 as `demuxer-max-back-bytes`. mpv's own 150/50 MB is about a minute of 4K ahead. Local files keep the user's settings. Test: features.ps1 "stream gets 384/128 MB of cache", "a local file keeps mpv's cache size".
+An `on_load` hook gives these URLs (and torrent streams) the online buffer through `file-local-options`: `buffer.mb()` MB, 3/4 as `demuxer-max-bytes`, 1/4 as `demuxer-max-back-bytes`. mpv's own 150/50 MB is about a minute of 4K ahead. Local files keep the user's settings. Test: features.ps1 "stream gets 1152/384 MB of cache", "a local file keeps mpv's cache size".
+
+### Online buffer and the RAM guard
+
+- **Size:** `settings.buffer_mb` comes from `stream_cache` (1536 by default) and is then set from the menu (Settings → Online buffer: 256 MB to 4 GB, `script-message watch-together-buffer <MB>`). It is saved with the other settings.
+- **RAM reports:** `torrent.ps1` and `stream.ps1`, whichever runs, send `watch-together-ram <free MB> <total MB>` every 5 s (`Win32_OperatingSystem`).
+- **The guard:** the buffer may use `used + free - reserve`. `used` is the current `demuxer-cache-state.total-bytes`, and `reserve` is `max(1024, 15 % of total)`. Below the chosen size, `buffer.ram_limit` becomes that, rounded down to 64 MB, at least 128 MB. It grows back only while `free` is 256 MB above the reserve, so a buffer near the line does not flip every 5 s. Each change goes straight into the playing stream's `file-local-options`: mpv stops reading ahead at a smaller limit, and what is already buffered stays until played. An OSD notice comes on the first cut and on the full restore. `ram_guard` (menu toggle, conf `ram_guard`) turns the guard off.
+- Tests: torrent.ps1 "the buffer choice reaches the playing stream", "low free RAM cuts the buffer", "free RAM again restores it" (fake RAM reports).
 
 Why several connections: through Porthole one connection got 28 Mbit/s, 4 got 38, 8 got 44 (`tests\speed.ps1`, a real two-PC link). The tunnel caps the total, so more connections give less and less. One 4K episode (~19 Mbit/s) fits; several 4K guests share the cap. Loopback through `stream.ps1`: 188 MB/s, byte-identical for ranges at 0, 1, piece edges and the last byte, 416 past the end.
 
@@ -265,4 +272,6 @@ The test videos need an `ffmpeg` with libx264 on PATH the first time. Not every 
 - The `.ps1` files stay ASCII: Windows PowerShell 5.1 reads BOM-less scripts as ANSI. All user-facing text lives in `main.lua` (UTF-8).
 - `install.bat` / `uninstall.bat`: UTF-8 with `chcp 65001`, CRLF, kept as-is by `.gitattributes`.
 - mpv Lua is LuaJIT/5.1: no `//`, no `goto`.
+- LuaJIT allows 200 active locals in one function, and the main chunk of `main.lua` reached that in 1.5.4 (`main function has more than 200 local variables`: the script does not load). New helpers go into a table (`buffer.*`) or a `do ... end` block whose locals end with it (the torrent section). On 2026-11-15 there were more than 20 free slots at the end of the file and inside the torrent block (probed by adding locals until mpv refused).
+- A function called from code above its `local function` definition is a nil global there: forward-declare it (`local x` near the top, `function x()` below).
 - Debug traces: `--msg-level=watch_together=debug` logs local actions, requests, received states and follow seeks.

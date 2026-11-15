@@ -34,7 +34,7 @@ An episode is `<ENGINE_BASE>/stream/<pct-encoded file name>?link=<hash>&index=<i
 - `basename()` drops `?…` and percent-decodes, so the name is the torrent's file name, and `follow_file`, `missing_files`, history and the duration check work as for local files. A local copy with the same name still wins over the stream.
 - mpv's `filename` property keeps the query, so all room code reads `media_name()` (`basename(path)`) instead.
 - `engine_hash(path)` returns the hash and the index of such a URL, or nil.
-- The `on_load` hook at priority 50 gives these URLs the `stream_cache` sizes and sets `force-media-title` to the file name.
+- The `on_load` hook at priority 50 gives these URLs the online buffer (development.md, Online buffer and the RAM guard) and sets `force-media-title` to the file name. TorrServer MatriX.150 reads ahead a fixed 16 MB past mpv's read position (`updateRA`: `adj := int64(16 << 20)`), so mpv's buffer, not the engine's `cacheSize`, decides how far ahead a torrent downloads.
 
 Only video files (by extension) go into the playlist, or all files if there are none, in natural order (`S1E2` before `S1E10`).
 
@@ -107,7 +107,7 @@ Guest (`on_room_torrent`):
 - bad hashes and a magnet with a line break never reach the engine;
 - a guest's torrent log records the room torrent, its episodes and the check.
 
-Last run: 23/23.
+Last run: 26/26.
 
 ## Log
 

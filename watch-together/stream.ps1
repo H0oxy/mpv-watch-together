@@ -28,6 +28,17 @@ function Send-Lua([string[]]$msg) {
     $mpvOut.WriteLine((ConvertTo-Json -Compress -InputObject @{ command = $cmd }))
 }
 
+# Free and total physical memory in MB, for main.lua's guard on its stream buffer.
+function Send-Ram {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -Property FreePhysicalMemory, TotalVisibleMemorySize
+        $cmd = @('script-message-to', $Script, 'watch-together-ram', "$([int64]($os.FreePhysicalMemory / 1024))", "$([int64]($os.TotalVisibleMemorySize / 1024))")
+        $mpvOut.WriteLine((ConvertTo-Json -Compress -InputObject @{ command = $cmd }))
+    } catch { }
+}
+$ramClock = [Diagnostics.Stopwatch]::StartNew()
+$nextRam = 0
+
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
 $listener.Start()
 Send-Lua @('ready', "$($listener.LocalEndpoint.Port)")
@@ -203,6 +214,7 @@ function Open-Request($client) {
 
 $accept = $listener.AcceptTcpClientAsync()
 while ($true) {
+    if ($ramClock.Elapsed.TotalSeconds -ge $nextRam) { $nextRam = $ramClock.Elapsed.TotalSeconds + 5; Send-Ram }
     $tasks = @($mpvTask, $accept)
     if ($cur) {
         if ($cur.write) { $tasks += $cur.write }

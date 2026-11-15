@@ -74,7 +74,7 @@ Watch online (Смотреть онлайн, the first item of the menu for a gu
 
 The file comes over four connections at once, because through Porthole one connection gets only part of the tunnel's speed. On one real Porthole link a single connection got 28 Mbit/s and four got 38 Mbit/s. A 4K episode needs about 19 Mbit/s, so one guest can watch 4K this way. Several guests watching 4K share the host's connection, and the room may have to wait while someone buffers.
 
-mpv keeps up to 512 MB of such an episode in RAM: 384 MB ahead and 128 MB behind, which is about two and a half minutes of 4K ahead. Short slowdowns in the tunnel go unnoticed, and a short rewind plays without loading again. The `stream_cache` setting changes the size.
+mpv keeps such an episode in RAM up to the online buffer: 1.5 GB by default, 3/4 ahead and 1/4 behind, so 1.1 GB ahead, about eight minutes of 4K. Short slowdowns go unnoticed, and a short rewind plays without loading again. Settings → Online buffer (Настройки → Буфер онлайн-просмотра) changes the size from 256 MB to 4 GB. While free memory runs low, the plugin shrinks the buffer, so that at least 1 GB or 15% of the RAM (whichever is more) stays free for everything else, and grows it back once memory is free again. Shrink when memory is low (Уменьшать, если мало памяти) in the same submenu turns that off.
 
 ## Watching a torrent
 
@@ -96,7 +96,7 @@ In a room, the guests get the same torrent from the host and each downloads it o
 
 A jump to a part that hasn't been downloaded yet makes the engine fetch that part first, so the room waits a few seconds ("Waiting for: Alex (buffering)"). How long depends on the swarm. A torrent needs more download speed than the video's bitrate on every PC; the check shows whether there is enough.
 
-Memory: up to 256 MB in the engine (`torrent_cache`) plus mpv's 512 MB cache (`stream_cache`). Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`, and `uninstall.bat` removes it.
+Memory: up to 256 MB in the engine (`torrent_cache`) plus the online buffer (1.5 GB by default, see above). The engine downloads only 16 MB past what mpv has read, so the online buffer decides how far ahead a torrent is downloaded: a bigger one rides out longer slow spells of the swarm. Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`, and `uninstall.bat` removes it.
 
 ## How sync works
 
@@ -141,7 +141,8 @@ resume_memory=yes   # remember episode and time, offer them when hosting again
 share_files=yes     # let guests download episodes from the host
 share_port=47801    # port for those downloads
 download_dir=       # a fixed folder for downloads; empty = the menu choice (open video's folder or Downloads)
-stream_cache=512    # MB of RAM for an episode watched from the host or a torrent: 3/4 ahead, 1/4 behind; 0 = mpv's default
+stream_cache=1536   # MB of the online buffer (host or torrent episodes): 3/4 ahead, 1/4 behind; 0 = mpv's default
+ram_guard=yes       # shrink the online buffer while free memory runs low
 torrent_port=47802  # local port of the torrent engine (it listens on 127.0.0.1 only)
 torrent_cache=256   # MB of RAM the torrent engine keeps
 torrent_url=        # use a TorrServer you already run, e.g. http://127.0.0.1:8090; empty = the plugin's own

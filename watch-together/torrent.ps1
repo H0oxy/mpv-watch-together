@@ -31,6 +31,15 @@ function Send-Lua([string[]]$msg) {
 }
 function Clean([string]$text) { $text -replace '\s+', ' ' }
 
+# Free and total physical memory in MB, for main.lua's guard on its stream buffer.
+function Send-Ram {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -Property FreePhysicalMemory, TotalVisibleMemorySize
+        $cmd = @('script-message-to', $Script, 'watch-together-ram', "$([int64]($os.FreePhysicalMemory / 1024))", "$([int64]($os.TotalVisibleMemorySize / 1024))")
+        $mpvOut.WriteLine((ConvertTo-Json -Compress -InputObject @{ command = $cmd }))
+    } catch { }
+}
+
 function Invoke-Engine([string]$path, $body) {
     $uri = $Base + $path
     if ($null -eq $body) { return Invoke-RestMethod -UseBasicParsing -TimeoutSec 10 -Uri $uri }
@@ -156,6 +165,7 @@ function On-Command($a) {
 }
 
 $next = 0
+$nextRam = 0
 while ($true) {
     [void]$mpvTask.Wait(250)
     if ($mpvTask.IsCompleted) {
@@ -169,6 +179,7 @@ while ($true) {
     }
 
     $now = $clock.Elapsed.TotalSeconds
+    if ($now -ge $nextRam) { $nextRam = $now + 5; Send-Ram }
     if ($now -lt $next) { continue }
     $next = $now + 1
 

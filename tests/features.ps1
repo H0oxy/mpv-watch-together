@@ -168,7 +168,8 @@ try {
     $ok = Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'path')) -like 'http*' } 15
     Check 'guest follows the host onto a streamed episode' $ok ''
     $cache = '{0}/{1}' -f ((I $b @('get_property', 'demuxer-max-bytes')) / 1MB), ((I $b @('get_property', 'demuxer-max-back-bytes')) / 1MB)
-    Check 'stream gets 384/128 MB of cache' ($cache -eq '384/128') $cache
+    # The default online buffer, 1.5 GB (unless this PC is short of free RAM and the guard cut it).
+    Check 'stream gets 1152/384 MB of cache' ($cache -eq '1152/384') $cache
     $null = I $a @('set_property', 'pause', $false)
     $null = I $a @('seek', 300, 'absolute')
     $ok = Wait-Until { $pa = I $a @('get_property', 'time-pos'); $pb = I $b @('get_property', 'time-pos')
