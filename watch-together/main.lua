@@ -434,6 +434,7 @@ local check_wanted = false  -- guest: the host runs a check, measure as soon as 
 local check_room            -- guest: {left} of the host's check, from the room info
 local last_missing          -- guest: the room's file last logged as missing here
 local send_torrent, on_room_torrent, drop_room_torrent, start_check, stop_check, check_result  -- defined further down
+local report_wait           -- defined with the waiting code; the host's first answer calls it
 
 local show_panel = false
 local PANEL_LINES = 20
@@ -1170,7 +1171,13 @@ end
 
 local function on_host_message(m)
     last_rx = mp.get_time()
-    if status == "lost" then set_status("connected") end
+    if status == "connecting" then  -- the host's first answer on this link
+        set_status("connected")
+        osd(T("in_room"))
+        if my_wait then report_wait() end
+    elseif status == "lost" then
+        set_status("connected")
+    end
 
     if type(m.you) == "string" then room_name = m.you end
     if m.t == "pong" and type(m.id) == "number" then
@@ -1334,7 +1341,7 @@ local function current_wait(now)
     return nil
 end
 
-local function report_wait()
+function report_wait()
     if role == "host" then update_hold()
     elseif role == "join" and (status == "connected" or status == "lost") then
         send("host", { t = "wait", reason = my_wait or "" })
@@ -1420,11 +1427,10 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
         if role == "host" then
             members[id] = { name = id, at = mp.get_time() }  -- named by its hello
         else
+            -- Only a link so far, not the room: Porthole accepts on the guest's PC even before the host has
+            -- opened the room, then drops the link. The host's first answer makes us "in the room".
             last_rx = mp.get_time()
-            set_status("connected")
-            osd(T("in_room"))
             send("host", { t = "hello", v = PROTOCOL, name = my_name, cid = settings.cid, torrent = true })
-            if my_wait then report_wait() end
         end
     elseif kind == "disconnected" then
         if role == "host" then
@@ -1437,10 +1443,11 @@ mp.register_script_message("watch-together-net", function(kind, id, data)
             set_status(next(members) and "hosting" or "listening")
             update_hold()  -- the member we were waiting for may have gone
         else
+            local was_in = status ~= "connecting"  -- dropped before the host ever answered: just retry quietly
             host_state, room, pending = nil, nil, nil
             end_nudge()
             set_status("connecting")
-            osd(T("host_dropped"))
+            if was_in then osd(T("host_dropped")) end
         end
     elseif kind == "listening" or kind == "connecting" then
         set_status(kind)

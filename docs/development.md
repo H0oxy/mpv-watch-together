@@ -28,7 +28,7 @@ install.bat, uninstall.bat
 
 1. A menu click sends `script-message watch-together-<action>` (`host`, `join`, `join-clipboard`, `leave`, `control <all|host>`, `invite`, `panel`, `update`, `install`).
 2. `main.lua` makes sure `input-ipc-server` is set (`mpv-watch-together-<pid>` if empty), then starts `bridge.ps1` with an async `subprocess` (`playback_only=false`). Aborting that command kills the bridge.
-3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`.
+3. Bridge to Lua: `script-message-to <script> watch-together-net <kind> [id] [data]`. Kinds: `listening`, `connecting`, `connected <id>`, `disconnected <id>`, `in <id> <line>`, `error <text>`. The host bridge names guests `p1`, `p2`, ...; the join bridge names the host `host`. On a guest, `connected` only means the TCP link is up: the guest sends `hello` and stays in status `connecting` until the host's first message, which makes it `connected` ("in the room"). A link that drops before that is retried without a notice, because Porthole accepts on the guest's PC even when the host has no room open.
 4. Lua to bridge: broadcast `script-message watch-together-out <target> <json>`, where target is a peer id or `*` (all peers). The bridge sees it as an IPC `client-message`.
 5. The bridge exits when the mpv pipe closes. The joiner reconnects every 2 s. A peer write blocked for 5 s (`SendTimeout`) closes that peer. The host refuses connections beyond `-MaxPeers` (`max_guests`). The bridge reads raw bytes and splits lines itself: a peer whose line passes 1 MB is closed, so an endless line cannot fill the host's memory. `script-message watch-together-close <id>` closes one peer.
 
@@ -248,8 +248,8 @@ Spread is measured with every playing position moved back to the time of the fir
 
 Last results (mpv 0.41.0-dev, one PC):
 
-- e2e: 30/30 (2026-11-15). "soft sync off: small drift is a seek" failed once on unchanged 1.5.4 code and passed on the next run: flaky.
-- features: 28/28 (2026-11-15).
+- e2e: 31/31 (2026-11-15). Timing-sensitive, and each failed once and passed on the next run: "soft sync off: small drift is a seek" (also on unchanged 1.5.4 code), "small drift caught up by speed" and "user speed change during a nudge".
+- features: 28/28 (2026-11-15). "next episode starts paused for everyone" failed once in four runs.
 - buffering: 8/8 (2026-11-15).
 - stream: 4/4 (2026-11-15).
 - torrent: 22/22 (2026-11-15).

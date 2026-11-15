@@ -80,6 +80,22 @@ try {
     Invoke-Mpv $b @('seek', 100, 'absolute') | Out-Null
     Invoke-Mpv $c @('seek', 200, 'absolute') | Out-Null
 
+    # Porthole opens the guest's local port even before the host has a room, and drops each link. That
+    # is no room: the guest used to flash "in the room" / "lost connection" every 2 s.
+    $porthole = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $Port)
+    $porthole.Start()
+    Invoke-Mpv $b @('script-message', 'watch-together-join') | Out-Null
+    $seen = @{}; $links = 0
+    $end = [DateTime]::Now.AddSeconds(5)
+    while ([DateTime]::Now -lt $end) {
+        if ($porthole.Pending()) { $porthole.AcceptTcpClient().Close(); $links++ }
+        $seen[[string](Status $b)] = $true
+        Start-Sleep -Milliseconds 50
+    }
+    $porthole.Stop()
+    Invoke-Mpv $b @('script-message', 'watch-together-leave') | Out-Null
+    Check 'a link dropped before the host answers is not the room' ($links -ge 2 -and -not $seen['connected'] -and -not $seen['lost']) ("links=$links states=$($seen.Keys -join ',')")
+
     Invoke-Mpv $a @('script-message', 'watch-together-host') | Out-Null
     Start-Sleep -Milliseconds 500
     foreach ($g in $b, $c) { Invoke-Mpv $g @('script-message', 'watch-together-join') | Out-Null }

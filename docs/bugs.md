@@ -72,6 +72,12 @@ Risk: B switches to follow A, B's own `file-loaded` would ask A to switch again,
 ## "Different file" warning flashes at episode boundaries
 Cause: for a moment the peer is already on the next episode. Fix: no warning for 3 s after a file load or a follow switch (`quiet_until`).
 
+## A guest flashed "in the room" while the host had no room yet
+Symptom (real use, 1.6.0 test build): a guest who joined before the host opened the room saw "Ты в комнате" and "Связь с хостом потеряна, переподключаемся" in turn every 2 s. Cause: Porthole listens on the guest's PC as soon as the port is allowed, accepts the link, and drops it when nothing listens on the host's side. The guest took the TCP connect for the room. Fix: the guest becomes `connected` (and shows "in the room") at the host's first message. A link that drops before that is retried quietly. Verified: a throwaway probe with a listener that accepts and closes saw `connected` with the old main.lua and only `connecting` with the new one; e2e "a link dropped before the host answers is not the room" does the same.
+
+## A function called above its definition stops the whole script
+Symptom: buffering.ps1 "B buffers -> hold (timeout 6 s)" failed every time after the "in the room" fix, and passed on the commit before it. Cause: the fix moved `report_wait()` into `on_host_message`, which comes before `local function report_wait` in the file. There the name is a nil global, and a guest that was already buffering when the host answered hit `attempt to call global 'report_wait'`. mpv then unloads the script. Fix: forward-declare `report_wait` next to the other late definitions. Verified: the debug log of B showed the Lua error; after the fix every suite was run against a copy whose `_G` logs each read of a missing global.
+
 ## Friend stuck at "подключаемся…" with Porthole
 Symptom: the host shows "комната открыта", the friend keeps connecting forever. Cause: the friend had not clicked Разрешить on the offered port, so nothing listened on 47800 on their PC. Fix: allow the port in Porthole. Verified on a real two-PC link: it connected right after the friend allowed the port. A 127.0.0.1-only listener on the host works with Porthole.
 
