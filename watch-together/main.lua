@@ -1951,7 +1951,7 @@ end
 
 local function start_engine()
     local args = ps_args("torrent.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(),
-                         "-CacheMB", tostring(o.torrent_cache), "-WatchPid", tostring(mp.get_property_number("pid") or 0))
+                         "-CacheMB", tostring(o.torrent_cache))
     local more = o.torrent_url ~= "" and { "-Base", engine_base }
                  or { "-Exe", engine_exe(), "-Download", ENGINE.url, "-Sha256", ENGINE.sha256, "-Port", tostring(o.torrent_port) }
     for _, a in ipairs(more) do args[#args + 1] = a end
@@ -2124,7 +2124,25 @@ mp.add_hook("on_load", 9, function(hook)
     local index = mp.get_property_number("playlist-pos", 0)
     replaced[mp.get_property("playlist/" .. index .. "/filename") or link] = true
     hook:defer()
-    open_torrent(link, index, function() hook:cont() end)
+    -- mpv waits for a held load even when told to quit, so the window's close button did nothing while the
+    -- file list came or the chooser was open. While it is held, closing lets it go and quits.
+    local held = true
+    local function release()
+        if not held then return false end
+        held = false
+        mp.remove_key_binding("watch-together-close-while-opening")
+        hook:cont()
+        return true
+    end
+    mp.add_forced_key_binding("CLOSE_WIN", "watch-together-close-while-opening", function()
+        tlog("open: the window was closed while the torrent was opening")
+        local ok, input = pcall(require, "mp.input")
+        if pending_pick and ok and input.terminate then input.terminate() end
+        pending_pick = nil
+        release()
+        mp.command("quit")
+    end)
+    open_torrent(link, index, release)
 end)
 
 mp.register_script_message("watch-together-open-torrent", function()

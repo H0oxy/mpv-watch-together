@@ -227,6 +227,18 @@ try {
     Check 'the next episode gets its own tracks' $ok (Show-Tracks $pe)
     Check 'the font folder applies from the next episode' ((P $pe 'sub-fonts-dir') -eq $fontDir) (P $pe 'sub-fonts-dir')
 
+    # The window's close button while a dropped torrent waits for its episode to be chosen: mpv waits for the
+    # plugin's held load, so the plugin must let go, and mpv quits.
+    $pf = Start-Player 'F' @($ep1)
+    $pff = Open-Ipc 'wt-tor-F'
+    [void](Wait-Until { (P $pff 'time-pos') -gt 0 } 10)
+    $null = I $pff @('loadfile', $magnet, 'replace')
+    [void](Wait-Until { (Engine-Count $pff) -eq 2 } 10)
+    Start-Sleep -Milliseconds 500   # the chooser is open now
+    try { $null = I $pff @('keypress', 'CLOSE_WIN') } catch { }
+    $ok = Wait-Until { $pf.HasExited } 10
+    Check 'the close button quits mpv while the episode chooser is open' $ok ''
+
     # A raw host sends bad torrent messages; nothing but a clean magnet may reach D's engine.
     $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $RawPort)
     $listener.Start()

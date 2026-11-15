@@ -20,8 +20,7 @@ param(
     [string]$Download = '',                # where to get it when Exe is missing or wrong
     [string]$Sha256 = '',
     [int]$Port = 0,                        # our engine's port; 0 = a free one, chosen at its start
-    [int]$CacheMB = 256,
-    [int]$WatchPid = 0                     # mpv: the engine goes away once no mpv of this name runs
+    [int]$CacheMB = 256
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -179,19 +178,20 @@ function Connect-EngineLocked([switch]$Restart) {
     $errLog = Join-Path $data 'engine-errors.log'   # what the engine says when it refuses to start
     $proc = Start-Process -FilePath $Exe -ArgumentList @('-p', "$p", '-i', '127.0.0.1', '-d', "`"$data`"", '-a') -WindowStyle Hidden -PassThru `
         -RedirectStandardError $errLog
-    # The engine outlives this helper (mpv may stop it) and the mpv that started it (another window may use
-    # it), but not the last mpv. The pid is checked against the exe: if the engine is gone by then, Windows
-    # may have given its pid to another program.
-    if ($WatchPid -gt 0) {
-        $name = (Get-Process -Id $WatchPid -ErrorAction SilentlyContinue).ProcessName
-        if ($name) {
-            $exeQ = $Exe -replace "'", "''"
-            $cmd = "while (Get-Process -Name '$name' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 10 }; " +
-                   "Get-Process -Id $($proc.Id) -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq '$exeQ' } | Stop-Process -Force"
-            $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))  # survives spaces and quotes in the path
-            Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc) -WindowStyle Hidden | Out-Null
-        }
-    }
+    # The engine outlives this helper and the mpv that started it (another window may use it), but not the
+    # last helper of this engine: every mpv window that uses it runs one, and a helper ends with its mpv, also
+    # a killed one (its IPC pipe breaks). Other mpv windows, without torrents, do not count. The pid is checked
+    # against the exe: if the engine is gone by then, Windows may have given its pid to another program.
+    $exeQ = $Exe -replace "'", "''"
+    $cmd = @'
+function Used { @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {
+    $c = ([string]$_.CommandLine).Replace('/', '\').ToLower(); $c.Contains('torrent.ps1') -and $c.Contains('{EXE}') }).Count -gt 0 }
+while (Used) { Start-Sleep -Seconds 5 }
+Get-Process -Id {PID} -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '{EXE}' } | Stop-Process -Force
+'@
+    $cmd = $cmd.Replace('{PID}', "$($proc.Id)").Replace("Path -eq '{EXE}'", "Path -eq '$exeQ'").Replace('{EXE}', $exeQ.ToLower())
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))  # survives spaces and quotes in the path
+    Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc) -WindowStyle Hidden | Out-Null
     for ($i = 0; $i -lt 60; $i++) {
         if (Test-Engine $Base) {
             if (-not (Test-Locked)) {

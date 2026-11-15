@@ -16,7 +16,7 @@ TorrServer (github.com/YouROK/TorrServer, GPL-3.0), one Windows exe from the Mat
 4. **Port and password.** The port is `torrent_port` if set, else the one in `engine.json` if it is still free, else a free one. The password is the one in `engine.json`, else 16 random bytes. Both go to `engine.json` and the password to `accs.db` (`{"wt": "<pass>"}`).
 5. **Start.** It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir> -a`, with stderr in `engine-errors.log`. If the engine exits before `/echo` answers, the last line of that log becomes the error the user sees (TorrServer logs harmless notes first, such as "ffprobe and avprobe not found in $PATH").
 6. **Password check.** TorrServer silently runs without a password when it cannot read `accs.db` (`auth.go`: `getAccounts` returns nil and no middleware is added). So once it answers, the same 401 check runs. An engine that takes requests without the password is stopped and refused: "the engine started without its password".
-7. **Watchdog.** It also starts a hidden `powershell` (`-EncodedCommand`). That process waits until no process with the starting mpv's name is left, then kills the engine, but only if its pid still belongs to `TorrServer.exe` at our path: an engine that died earlier may have left its pid to another program. Waiting for the last mpv, not the one that started it, keeps the engine for other windows. mpv kills `torrent.ps1` itself on exit, so the helper cannot clean up.
+7. **Watchdog.** It also starts a hidden `powershell` (`-EncodedCommand`). Every 5 s that process looks for a `powershell` whose command line runs `torrent.ps1` with our `-Exe` (compared with "/" turned into "\"). Once there is none, it kills the engine, but only if its pid still belongs to `TorrServer.exe` at our path: an engine that died earlier may have left its pid to another program. Every mpv window that uses the engine runs such a helper, so the engine stays while any of them does. A helper ends with its mpv, also a killed one: its IPC pipe breaks and the read loop exits. mpv kills `torrent.ps1` itself on a normal exit, so the helper cannot clean up. (It used to wait for every process named like the starting mpv, and any mpv window, even one without a torrent, kept the engine: bugs.md.)
 8. **Settings.** It reads `/settings`, then writes them back with `cacheSize = torrent_cache MB`, `useDisk = false`, and Bonjour, DLNA, Rutor and Torznab off. The settings are replaced as a whole, which is why they are read first.
 9. It answers `ready <base url>`, and Lua takes its stream address from that. Commands sent before that wait in `engine.queue`.
 
@@ -75,7 +75,7 @@ Each player attaches tracks from its own engine; nothing about tracks goes over 
 ## Opening
 
 - **From the menu** (Open torrent from clipboard, host or alone): `open_torrent(text, nil)`. What plays now keeps playing until an episode is picked; then the picked one is loaded with `replace`, and the others are inserted before and appended after it.
-- **Through mpv** (command line, drag and drop, a playlist): an `on_load` hook at priority 9 catches `magnet:?` and existing local `.torrent` paths. It calls `hook:defer()`, inserts the episodes after the link's entry, and after the pick runs `playlist-play-index` and `hook:cont()`. mpv then drops the link's own load, because a new file was requested. The link's entry is in `replaced` and goes at the next `start-file`.
+- **Through mpv** (command line, drag and drop, a playlist): an `on_load` hook at priority 9 catches `magnet:?` and existing local `.torrent` paths. It calls `hook:defer()`, inserts the episodes after the link's entry, and after the pick runs `playlist-play-index` and `hook:cont()`. mpv then drops the link's own load, because a new file was requested. The link's entry is in `replaced` and goes at the next `start-file`. mpv waits for a deferred hook even when told to quit, so while the hook is held a forced `CLOSE_WIN` binding (the window's close button) closes the chooser, continues the hook and quits.
 - mpv takes a magnet for a relative file path: the entry becomes `<cwd>\magnet:?…` with `/` turned into `\` (`udp://x` → `udp:\x`). The hook takes everything from `magnet:?`, turns `\` back into `/`, and restores `scheme:/x` to `scheme://x` (see bugs.md).
 - **A torrent watched before** (history entry `btih:<hash>` naming one of its episodes) opens no chooser: it plays that episode from the remembered time (`pending_resume`) and says "Resuming <episode> at <time>". Another episode is in the playlist. The history is written only with `resume_memory` on.
 - **Chooser** for a new torrent: `mp.input.select`. `submit`, `closed` (Esc: the first episode) and `script-message watch-together-pick [k]` (tests) all end in `finish`, which runs once.
@@ -140,7 +140,7 @@ Test: torrent.ps1 "near the end, the next episode is fetched ahead". The room is
 - a second mpv window using the running engine;
 - a killed engine coming back on the same port;
 - an engine that ignores its password (environment variable `FAKE_IGNORE_AUTH`) being refused and stopped;
-- the watchdog stopping the engine once no process of the player's name is left. A renamed `ping.exe` stands in for mpv; a real mpv name would wait for every mpv on the PC.
+- the watchdog stopping the engine once the only player that uses it is killed, while three other mpv windows (without a helper) stay open; the killed player's helper exits by itself.
 
 The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7; the helper before the fixes below failed 3 of them.
 
@@ -164,9 +164,10 @@ The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7;
 - a guest's torrent log records the room torrent, its episodes and the check;
 - a room torrent the guest's engine could not take is tried again (`fake_torrserver.py` reads its config on every request, so the test adds the torrent after the first try failed);
 - a torrent watched before goes on where it stopped without the chooser;
+- the window's close button quits mpv while a dropped torrent's chooser is open (`keypress CLOSE_WIN`);
 - extra tracks: a player with Russian display language gets the episode's voice-over (title from its studio folder, `ru`) and subtitles, hears the voice-over first, the font is fetched, and the next episode gets its own files and the font folder. The stand-in audio files are episodes, so the test counts only audio and subtitle tracks.
 
-Last run: 33/33. `tests\tracks.ps1`: 13/13.
+Last run: 34/34. `tests\tracks.ps1`: 13/13.
 
 ## Log
 

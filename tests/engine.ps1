@@ -97,10 +97,10 @@ function Reports($ipc) {
 # The exe path as main.lua gives it: utils.join_path puts "/" between the config folder and the file, so
 # the helper must still know its engine by Windows' "\" path (it once did not, and left engines running).
 $luaExe = "$run/engine/TorrServer.exe"
-function Start-Helper([string]$n, [int]$watch = 0) {
+function Start-Helper([string]$n) {
     $p = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$helper`"",
         '-Pipe', "wt-eng-$n", '-Script', 'wtprobe', '-Exe', "`"$luaExe`"", '-Download', 'http://127.0.0.1:9/none', '-Sha256', $sha,
-        '-Port', '0', '-WatchPid', "$watch")
+        '-Port', '0')
     [void]$procs.Add($p)
     $p
 }
@@ -154,23 +154,23 @@ try {
     Start-Sleep 1
     Check 'an engine without its password is refused and stopped' ($ok -and (Engines).Count -eq 0) ("reports: {0}; engines={1}" -f ((Reports $c) -join ' | '), (Engines).Count)
 
-    # 5. The watchdog: the engine goes once no process of the starting player's name runs. A renamed ping
-    #    stands in for mpv (a real mpv name would wait for every mpv on this PC).
-    $stand = Join-Path $run 'wtstand.exe'
-    Copy-Item "$env:SystemRoot\System32\PING.EXE" $stand
-    $sp = Start-Process $stand -ArgumentList '-n 6 127.0.0.1' -WindowStyle Hidden -PassThru
+    # 5. The watchdog: the engine goes once no player uses it, even when that player is killed and other mpv
+    #    windows (a, b, c, idle, no helper any more) stay open. Only d's helper uses it; killing mpv d ends the
+    #    helper (its IPC pipe breaks), and then the watchdog stops the engine.
     $d = Start-Mpv 'd'
-    $hd = Start-Helper 'd' $sp.Id
+    $dp = Get-CimInstance Win32_Process -Filter "Name='mpv.exe'" | Where-Object { $_.CommandLine -match 'wt-eng-d' }
+    $hd = Start-Helper 'd'
     $ok = Wait-Until { (Base (Reports $d)) -and (Engines).Count -eq 1 } 20
-    Stop-Process -Id $hd.Id -Force   # with no mpv left, no helper would be left to start it again either
+    Stop-Process -Id $dp.ProcessId -Force
+    $helperGone = Wait-Until { $hd.HasExited } 10
     $gone = Wait-Until { (Engines).Count -eq 0 } 30
-    Check 'the engine goes once the last player is gone' ($ok -and $gone -and $sp.HasExited) ("engines={0}" -f (Engines).Count)
+    $others = @(Get-CimInstance Win32_Process -Filter "Name='mpv.exe'" | Where-Object { $_.CommandLine -match 'wt-eng-[abc]' }).Count
+    Check 'a killed player: its helper ends, the engine goes, other mpv windows do not hold it' ($ok -and $helperGone -and $gone -and $others -eq 3) ("helper exited={0} engines={1} other mpv={2}" -f $hd.HasExited, (Engines).Count, $others)
 } finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
     Get-CimInstance Win32_Process -Filter "Name='mpv.exe'" | Where-Object { $_.CommandLine -match 'wt-eng-' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Engines | Stop-Process -Force -ErrorAction SilentlyContinue
-    Get-Process -Name wtstand -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep 1
     Remove-Item -Recurse -Force $run -ErrorAction SilentlyContinue
 }
