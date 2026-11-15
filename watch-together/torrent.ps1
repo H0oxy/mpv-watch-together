@@ -45,6 +45,9 @@ function Send-Ram {
 }
 
 $own = -not $Base                          # we start and keep our engine
+# main.lua joins paths with "/"; Windows reports process paths with "\". One form, or the watchdog and the
+# stray check below would not know our own engine.
+if ($own) { $Exe = [IO.Path]::GetFullPath($Exe) }
 $data = if ($own) { Split-Path $Exe } else { '' }
 $stateFile = if ($own) { Join-Path $data 'engine.json' } else { '' }
 $auth = $null                              # Authorization header of our engine
@@ -130,13 +133,32 @@ function Use-State($st) {
 # The engine of engine.json if it answers and is locked; else a new one on that port (or Port, or a free
 # one) with that password (or a new one). Another mpv window may have started it. -Restart (the engine
 # stopped answering): if something still holds its port, that is the engine, slow, so no second one starts.
+# Helpers of several mpv windows take turns here (a named mutex), so only one of them starts an engine.
 function Connect-Engine([switch]$Restart) {
+    $mutex = New-Object System.Threading.Mutex($false, 'Local\watch-together-engine')
+    try {
+        $got = $false
+        try { $got = $mutex.WaitOne(90000) } catch [System.Threading.AbandonedMutexException] { $got = $true }  # its holder died: ours now
+        if (-not $got) { throw 'another mpv window is still starting the engine' }
+        try { Connect-EngineLocked -Restart:$Restart } finally { $mutex.ReleaseMutex() }
+    } finally { $mutex.Dispose() }
+}
+
+function Connect-EngineLocked([switch]$Restart) {
     $st = $null
     if (Test-Path -LiteralPath $stateFile) { try { $st = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json } catch { } }
     if ($st -and $st.port -and $st.pass) {
         Use-State $st
         if ((Test-Engine $Base) -and (Test-Locked)) { return }
         if ($Restart -and -not (Test-PortFree ([int]$st.port))) { throw 'the engine does not answer' }
+    }
+    # Any other engine from our folder is unusable here (an older plugin's, without a password, or hung) and
+    # holds config.db, which a new one cannot open ("error open bboltDB ... timeout"). Only our helpers start
+    # this exe, and they take turns, so it is not one that is still starting.
+    $stray = @(Get-Process -Name TorrServer -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $Exe })
+    if ($stray) {
+        $stray | Stop-Process -Force
+        $stray | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue   # gone, and its lock on config.db with it
     }
     if (-not (Test-Path -LiteralPath $Exe) -or (Get-Sha $Exe) -ne $Sha256.ToLower()) { Get-Engine }
     $pass = if ($st -and $st.pass) { [string]$st.pass } else {
@@ -175,7 +197,8 @@ function Connect-Engine([switch]$Restart) {
             return
         }
         if ($proc.HasExited) {
-            $why = @(Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) | Select-Object -First 1
+            # The last line: TorrServer logs harmless notes first ("ffprobe and avprobe not found").
+            $why = @(Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) | Select-Object -Last 1
             throw "the engine exited: $why"
         }
         Start-Sleep -Milliseconds 250

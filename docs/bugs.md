@@ -120,6 +120,19 @@ Symptom: reopening a torrent offered an episode watched minutes before, not the 
 ## The pinned engine (Silo.2) refused its command line
 Symptom (real use): opening a .torrent downloaded the engine, then showed "Torrent: the torrent engine stopped" and nothing else. Cause: Silo.2, the newest TorrServer release at the time, accepts only `-c <config.yaml>` (`flag provided but not defined: -p`). The flags we used belong to the MatriX line, and the offline tests never start a real engine. The real reason was also hidden: `torrent.ps1` reported it, but the job failure that followed overwrote it with "stopped". Fix: pin MatriX.150, whose source at that tag has `-p`/`-i`/`-d`. The engine's stderr goes to `engine-errors.log`, its first line becomes the error, and Lua keeps the helper's last error for the jobs it fails. Verified: ran the Silo.2 exe by hand with our arguments and got that message; MatriX.150's flags and routes checked in its source at the tag. A live run with MatriX.150 is still to do.
 
+## The engine outlived mpv, and the next one could not open its db
+Symptom (real use, after the password update): opening a .torrent showed "Torrent: the engine exited: ... ffprobe and avprobe not found in $PATH" and nothing played. Causes:
+1. An engine of the previous build (no password, port 47802) was still running with no mpv left. The watchdog compared the process path with `-Exe` as `main.lua` passes it: `...\Roaming/mpv/watch_together_engine/TorrServer.exe`, with "/" from `utils.join_path`. Windows reports "\". The paths never matched, so no engine was ever stopped.
+2. That engine held `config.db`, and the new one exited with `error open bboltDB: ... config.db` after a 5 s `timeout`.
+3. The message showed the first stderr line, a harmless note, instead of the last one, the cause.
+
+Fix:
+1. `torrent.ps1` makes `-Exe` a full path (`[IO.Path]::GetFullPath`).
+2. Before starting an engine it stops any other `TorrServer.exe` from our folder and waits for it to exit. A named mutex keeps two mpv windows from doing that to each other.
+3. The error is the last line.
+
+Verified: engine.ps1 now passes the exe with "/" and leaves an older engine running from the folder. The helper before the fix failed "an older engine left in our folder is stopped first", "a second mpv window uses the running engine" and "the engine goes once the last player is gone"; with the fix all 7 checks pass. The engine.ps1 stand-in has no db, so the bbolt lock itself was seen only in the user's `engine-errors.log`.
+
 ## Any web page could drive the torrent engine
 Risk (found in an audit, not exploited): TorrServer allows every origin and private-network requests (`AllowAllOrigins`, `AllowPrivateNetwork` in MatriX.150 `server.go`), and the plugin ran it without a password on a fixed port (47802). A page open in the browser while the engine ran could `POST /torrents` (add any torrent: the PC downloads and shares it) or `/settings`. Fix: TorrServer's HTTP password (`-a`, a random password in `accs.db`) on a random port, both kept in `engine.json`. After each start the helper checks that `/settings` without the password gets 401, because TorrServer silently runs open when it cannot read `accs.db`. `/stream` stays open in TorrServer; the random port is what hides it. Verified: tests\engine.ps1 with a stand-in engine that behaves like TorrServer's auth; not yet against the real MatriX.150.
 

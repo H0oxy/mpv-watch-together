@@ -6,15 +6,15 @@ The host opens a magnet or a .torrent; every player streams the episode from its
 
 TorrServer (github.com/YouROK/TorrServer, GPL-3.0), one Windows exe from the MatriX line (MatriX.150). `ENGINE` at the top of `main.lua` pins its release URL and SHA256; the plugin never ships it. A different pinned version replaces the old exe on the next start, because its hash no longer matches.
 
-`torrent.ps1` starts with the first torrent command and keeps running while mpv runs:
+`torrent.ps1` starts with the first torrent command and keeps running while mpv runs. It turns `-Exe` into a full Windows path first: `main.lua` joins the folder and the file name with "/", and process paths come back with "\", so the path checks below would not know our own engine.
 
 **Why a password and a random port.** TorrServer's API allows every origin (MatriX.150 `server.go`: `AllowAllOrigins = true`, `AllowPrivateNetwork = true`). Without a password, any web page open while the engine runs could add torrents or change its settings through `http://127.0.0.1:<port>`. So our engine runs with TorrServer's HTTP password (`-a`, account `wt` in `accs.db`), which `/settings`, `/torrents` and the other API routes need. `/stream`, `/play` and `/echo` stay open in TorrServer, and a random port is what keeps a page from finding them easily.
 
 1. If `torrent_url` is set, it only checks `/echo` there and starts nothing, with no password (the user's own engine).
 2. Otherwise it reads `engine.json` (`{port, pass}`) in `~~/watch_together_engine`. If the engine there answers `/echo`, refuses `/settings` without the password (401) and takes it with it, that engine is used: another mpv window started it.
-3. Else it makes sure that `TorrServer.exe` there exists and matches the pinned hash. If not, it downloads it to `.part` (reporting `engine <bytes> <total>`), checks the hash, and renames it. A mismatch is an error, and the file is deleted.
+3. Else, holding the named mutex `Local\watch-together-engine` (helpers of several mpv windows take turns, so only one starts an engine), it stops any other `TorrServer.exe` running from our folder. That one is an older plugin's engine without a password, or a hung one, and it would hold `config.db` (bbolt): a new engine then fails with `error open bboltDB ... timeout`. Then it makes sure that `TorrServer.exe` exists and matches the pinned hash. If not, it downloads it to `.part` (reporting `engine <bytes> <total>`), checks the hash, and renames it. A mismatch is an error, and the file is deleted.
 4. **Port and password.** The port is `torrent_port` if set, else the one in `engine.json` if it is still free, else a free one. The password is the one in `engine.json`, else 16 random bytes. Both go to `engine.json` and the password to `accs.db` (`{"wt": "<pass>"}`).
-5. **Start.** It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir> -a`, with stderr in `engine-errors.log`. If the engine exits before `/echo` answers, the first line of that log becomes the error the user sees.
+5. **Start.** It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir> -a`, with stderr in `engine-errors.log`. If the engine exits before `/echo` answers, the last line of that log becomes the error the user sees (TorrServer logs harmless notes first, such as "ffprobe and avprobe not found in $PATH").
 6. **Password check.** TorrServer silently runs without a password when it cannot read `accs.db` (`auth.go`: `getAccounts` returns nil and no middleware is added). So once it answers, the same 401 check runs. An engine that takes requests without the password is stopped and refused: "the engine started without its password".
 7. **Watchdog.** It also starts a hidden `powershell` (`-EncodedCommand`). That process waits until no process with the starting mpv's name is left, then kills the engine, but only if its pid still belongs to `TorrServer.exe` at our path: an engine that died earlier may have left its pid to another program. Waiting for the last mpv, not the one that started it, keeps the engine for other windows. mpv kills `torrent.ps1` itself on exit, so the helper cannot clean up.
 8. **Settings.** It reads `/settings`, then writes them back with `cacheSize = torrent_cache MB`, `useDisk = false`, and Bonjour, DLNA, Rutor and Torznab off. The settings are replaced as a whole, which is why they are read first.
@@ -96,13 +96,14 @@ Guest (`on_room_torrent`):
 ## Tests
 
 `tests\engine.ps1` runs `torrent.ps1` with its own engine, offline. The engine is a stand-in TorrServer compiled from C# in the test: it takes `-p -i -d -a` and, like the real one, wants the password from `accs.db` only with `-a` and only if the file reads. A probe script in an idle mpv records the helper's reports. It checks:
+- an older engine already running from our folder without a password being stopped before ours starts;
 - a free port and a password in `engine.json`, and the API refusing a request without it;
 - a second mpv window using the running engine;
 - a killed engine coming back on the same port;
 - an engine that ignores its password (environment variable `FAKE_IGNORE_AUTH`) being refused and stopped;
 - the watchdog stopping the engine once no process of the player's name is left. A renamed `ping.exe` stands in for mpv; a real mpv name would wait for every mpv on the PC.
 
-Last run: 6/6.
+The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7; the helper before the fixes below failed 3 of them.
 
 `tests\torrent.ps1` runs offline. `tests\fake_torrserver.py` answers the calls the plugin makes:
 - `/echo`, `/settings`;

@@ -94,9 +94,12 @@ function Reports($ipc) {
     $ipc.w.WriteLine((ConvertTo-Json -Compress -InputObject @{ command = @('get_property', 'user-data/probe'); request_id = $ipc.id }))
     while ($true) { $m = ConvertFrom-Json $ipc.r.ReadLine(); if ($m.request_id -eq $ipc.id) { return @($m.data) } }
 }
+# The exe path as main.lua gives it: utils.join_path puts "/" between the config folder and the file, so
+# the helper must still know its engine by Windows' "\" path (it once did not, and left engines running).
+$luaExe = "$run/engine/TorrServer.exe"
 function Start-Helper([string]$n, [int]$watch = 0) {
     $p = Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$helper`"",
-        '-Pipe', "wt-eng-$n", '-Script', 'wtprobe', '-Exe', "`"$exe`"", '-Download', 'http://127.0.0.1:9/none', '-Sha256', $sha,
+        '-Pipe', "wt-eng-$n", '-Script', 'wtprobe', '-Exe', "`"$luaExe`"", '-Download', 'http://127.0.0.1:9/none', '-Sha256', $sha,
         '-Port', '0', '-WatchPid', "$watch")
     [void]$procs.Add($p)
     $p
@@ -110,10 +113,16 @@ function Post([string]$url, [string]$authz) {
 }
 
 try {
+    # 0. An engine of an older plugin still runs from our folder, without a password (the real one would
+    #    hold config.db, and a new engine could not open it): the helper stops it before starting its own.
+    $old = Start-Process $exe -PassThru -WindowStyle Hidden -ArgumentList @('-p', '47869', '-i', '127.0.0.1', '-d', "`"$eng`"")
+    [void](Wait-Until { try { [void](Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 'http://127.0.0.1:47869/echo'); $true } catch { $false } } 5)
+
     # 1. A new engine: a free port, a password in accs.db and engine.json, the API locked without it.
     $a = Start-Mpv 'a'
     $ha = Start-Helper 'a'
     $ok = Wait-Until { (Base (Reports $a)) -match '^http://127\.0\.0\.1:\d+$' } 20
+    Check 'an older engine left in our folder is stopped first' ($ok -and $old.HasExited -and (Engines).Count -eq 1) ("old exited={0} engines={1}" -f $old.HasExited, (Engines).Count)
     $base = Base (Reports $a)
     $state = Get-Content -Raw (Join-Path $eng 'engine.json') | ConvertFrom-Json
     $authz = 'Basic ' + [Convert]::ToBase64String($utf8.GetBytes("wt:$($state.pass)"))
