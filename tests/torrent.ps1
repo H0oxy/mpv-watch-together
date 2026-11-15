@@ -110,6 +110,8 @@ try {
     $ok = Wait-Until { $p = Panel $a; $p -match "$yes A" -and $p -match "$yes B" -and $p -match "$yes C" } 15
     Check 'room check: everyone fast enough' $ok (Panel $a)
     Check 'guests see the check too' ((Panel $b) -match 'Checking the swarm|Swarm check') (Panel $b)
+    $blog = Get-Content -Raw -Encoding UTF8 (Join-Path $run 'cfg-B\watch_together_torrent.log') -ErrorAction SilentlyContinue
+    Check "a guest's torrent log tells the story" ($blog -match 'room torrent: 1{40}' -and $blog -match 'episodes known' -and $blog -match 'check start: hash 1{40}') ''
     [IO.File]::WriteAllText($speedFile, '1000')
     $null = I $a @('script-message', 'watch-together-check')
     $ok = Wait-Until { $p = Panel $a; $p -match "$no A" -and $p -match "$no B" } 15

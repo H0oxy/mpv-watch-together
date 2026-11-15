@@ -227,6 +227,8 @@ local STRINGS = {
         check_line = "%s %s — %.1f из ~%.1f Мбит/с, пиров %d",
         check_measuring = "… %s — меряем",
         check_local = "✓ %s — свой файл",
+        check_buffered = "✓ %s — в запасе %d с видео",
+        check_away = "… %s — ещё не на этой серии",
     },
     en = {
         menu = "Watch together",
@@ -346,6 +348,8 @@ local STRINGS = {
         check_line = "%s %s — %.1f of ~%.1f Mbit/s, %d peers",
         check_measuring = "… %s — measuring",
         check_local = "✓ %s — own file",
+        check_buffered = "✓ %s — %d s of video buffered",
+        check_away = "… %s — not on this episode yet",
     },
 }
 local lang = "en"  -- until the Windows display language is known
@@ -428,6 +432,7 @@ local sent_torrent          -- host: hash last told to the guests ("" = none)
 local check                 -- this player's swarm-speed measurement: {hash, length, started, ends, sum, n, peers}
 local check_wanted = false  -- guest: the host runs a check, measure as soon as we are on the episode
 local check_room            -- guest: {left} of the host's check, from the room info
+local last_missing          -- guest: the room's file last logged as missing here
 local send_torrent, on_room_torrent, drop_room_torrent, start_check, stop_check, check_result  -- defined further down
 
 local show_panel = false
@@ -435,6 +440,32 @@ local PANEL_LINES = 20
 local panel = mp.create_osd_overlay("ass-events")
 
 local function osd(text) mp.osd_message(text, 3) end
+
+-- Torrent mode depends on a swarm and an engine we can't see from here, so it keeps its own log next to the
+-- settings (also mpv's log at info). A new one starts past 1 MB; the previous one stays as .old.
+local TORRENT_LOG = state_file("watch_together_torrent.log")
+if TORRENT_LOG then
+    local f = io.open(TORRENT_LOG, "r")
+    if f then
+        local size = f:seek("end")
+        f:close()
+        if size and size > 1048576 then
+            os.remove(TORRENT_LOG .. ".old")
+            os.rename(TORRENT_LOG, TORRENT_LOG .. ".old")
+        end
+    end
+end
+
+local function tlog(fmt, ...)
+    local ok, text = pcall(string.format, fmt, ...)
+    local line = os.date("%Y-%m-%d %H:%M:%S ") .. (ok and text or fmt)
+    mp.msg.info(line)
+    local f = TORRENT_LOG and io.open(TORRENT_LOG, "a")
+    if f then
+        f:write(line, "\n")
+        f:close()
+    end
+end
 
 local function fmt_time(t)
     t = math.floor(t + 0.5)
@@ -546,10 +577,15 @@ end
 
 local function ass_escape(s) return (s:gsub("\\", "\\\\"):gsub("{", "\\{"):gsub("}", "\\}")) end
 
+local CHECK_BUFFER_OK = 60  -- seconds of video already buffered that count as "fine" without a speed
+
 -- One member's swarm check: can its download keep up with the episode's bitrate (with a 1.5x margin)?
 local function check_label(name, c)
     if type(c) ~= "table" then return nil end
     if c["local"] then return T("check_local", short(name, 20)) end
+    if c.away then return T("check_away", short(name, 20)) end
+    -- No download while the player already holds a minute: the engine has nothing to fetch, not a slow swarm.
+    if (c.speed or 0) == 0 and (c.buf or 0) >= CHECK_BUFFER_OK then return T("check_buffered", short(name, 20), math.floor(c.buf)) end
     if not c.need or not c.speed then return T("check_measuring", short(name, 20)) end
     local ratio = c.speed / c.need
     local mark = ratio >= 1.5 and "✓" or ratio >= 1 and "⚠" or "✗"
@@ -845,6 +881,10 @@ local function follow_file(m)
     index = index or stream_index
     -- In a torrent room names are exact; a missing one is still being added, not another release.
     if not index and not room_torrent and type(m.pl) == "number" and m.pl >= 0 and m.pl < #playlist then index = m.pl end
+    if not index and room_torrent and m.file ~= last_missing then
+        last_missing = m.file
+        tlog("follow: %s is not in the playlist (yet)", m.file)
+    end
     if not index or index == mp.get_property_number("playlist-pos") then return false end
     expected_switch = index
     quiet_until = mp.get_time() + 3
@@ -1070,7 +1110,8 @@ local function on_guest_message(id, m)
         g.rtt = type(m.rtt) == "number" and m.rtt or nil
     elseif m.t == "check" and type(m.r) == "table" then
         local function num(v) return type(v) == "number" and v >= 0 and v < 1e12 and v or nil end
-        g.check = { speed = num(m.r.speed), need = num(m.r.need), peers = num(m.r.peers), ["local"] = m.r["local"] == true }
+        g.check = { speed = num(m.r.speed), need = num(m.r.need), peers = num(m.r.peers), buf = num(m.r.buf),
+                    ["local"] = m.r["local"] == true, away = m.r.away == true }
     elseif m.t == "wait" then
         local r = (m.reason == "buffering" or m.reason == "loading") and m.reason or nil
         if r ~= g.wait then g.wait, g.wait_since, g.gave_up = r, mp.get_time(), nil end
@@ -1165,7 +1206,8 @@ local function on_host_message(m)
         local function num(v) return type(v) == "number" and v or nil end
         local function check_of(c)
             if type(c) ~= "table" then return nil end
-            return { speed = num(c.speed), need = num(c.need), peers = num(c.peers), ["local"] = c["local"] == true }
+            return { speed = num(c.speed), need = num(c.need), peers = num(c.peers), buf = num(c.buf),
+                     ["local"] = c["local"] == true, away = c.away == true }
         end
         for _, e in ipairs(m.members) do
             if type(e) == "table" and type(e.name) == "string" and #list < 500 then
@@ -1785,13 +1827,14 @@ local function start_engine()
     if o.torrent_url == "" then
         for _, a in ipairs({ "-Exe", engine_exe(), "-Download", ENGINE.url, "-Sha256", ENGINE.sha256 }) do args[#args + 1] = a end
     end
+    tlog("engine: starting the helper for %s (%s)", ENGINE_BASE, o.torrent_url ~= "" and "torrent_url" or engine_exe())
     local h
     h = mp.command_native_async({ name = "subprocess", args = args, playback_only = false, capture_stderr = true },
         function(_, res)
             if not engine or engine.handle ~= h then return end
             local why = engine.last_error or T("engine_died")  -- the reason it gave before exiting, if any
             engine = nil
-            mp.msg.warn("torrent.ps1 exited: " .. utils.format_json(res))
+            tlog("engine: the helper exited: %s", utils.format_json(res))
             local jobs = engine_jobs
             engine_jobs = {}
             for _, job in pairs(jobs) do job.fail(why) end
@@ -1810,6 +1853,7 @@ local function add_torrent(link, ok, fail)
     job_seq = job_seq + 1
     local id = tostring(job_seq)
     engine_jobs[id] = { ok = ok, fail = fail }
+    tlog("add #%s: %s", id, link:sub(1, 300))
     engine_cmd("add", id, link)
 end
 
@@ -1887,6 +1931,7 @@ local function open_torrent(link, index, done)
             for k, f in ipairs(files) do mp.commandv("loadfile", engine_url(hash, f), "insert-at", tostring(index + k)) end
         end
         choose_episode(t, function(k, resume_pos)
+            tlog("open: %s videos, picked %s, resume at %s", #files, files[k].path, tostring(resume_pos))
             pending_resume = resume_pos
             if o.torrent_check > 0 then
                 -- Everyone opens it paused and measures the swarm until someone presses play.
@@ -1905,6 +1950,7 @@ local function open_torrent(link, index, done)
             done()
         end)
     end, function(err)
+        tlog("open failed: %s", tostring(err))
         osd(T("torrent_failed", err))
         done()
     end)
@@ -1950,12 +1996,17 @@ mp.register_script_message("watch-together-pick", function(k)
 end)
 
 -- From torrent.ps1: engine <bytes> <total> | ready | files <id> <hash> <json> | stat <hash> <B/s> <peers> <seeders> | error <id> <text>
-mp.register_script_message("watch-together-torrent", function(kind, a, b, c)
+mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
     if not engine then return end
     if kind == "engine" then
         local done, total = tonumber(a) or 0, tonumber(b) or 0
+        if not engine.downloading then
+            engine.downloading = true
+            tlog("engine: downloading %s", ENGINE.url)
+        end
         if total > 0 then mp.osd_message(T("engine_progress", math.floor(done * 100 / total), mb(done), mb(total)), 2) end
     elseif kind == "ready" then
+        tlog("engine: ready")
         engine.ready = true
         for _, args in ipairs(engine.queue) do mp.commandv(unpack(args)) end
         engine.queue = {}
@@ -1963,18 +2014,25 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c)
         local job = engine_jobs[a]
         engine_jobs[a] = nil
         local list = utils.parse_json(c or "")
+        tlog("add #%s: hash %s, %s files", tostring(a), tostring(b), type(list) == "table" and #list or "?")
         if not job then return end
         if type(b) == "string" and #b == 40 and b:match("^%x+$") and type(list) == "table" then job.ok(b:lower(), list)
         else job.fail("bad answer from the engine") end
     elseif kind == "stat" then
         if not check or check.hash ~= a then return end
         check.peers = tonumber(c) or check.peers
-        -- The first seconds only find and connect peers: they would understate the speed.
-        if mp.get_time() - check.started >= 5 then
-            check.sum = check.sum + (tonumber(b) or 0) * 8
+        -- The first seconds only find and connect peers, and a second without download means the engine
+        -- had nothing to fetch (its cache or the player is full) or nothing came: both would understate
+        -- the speed. check_result tells them apart by the player's buffer.
+        local bps = (tonumber(b) or 0) * 8
+        tlog("stat: %.1f Mbit/s, %s peers, %s seeders, %.0f s buffered", bps / 1e6, tostring(c), tostring(d),
+             mp.get_property_number("demuxer-cache-duration") or 0)
+        if mp.get_time() - check.started >= 5 and bps > 0 then
+            check.sum = check.sum + bps
             check.n = check.n + 1
         end
     elseif kind == "error" then
+        tlog("engine error #%s: %s", tostring(a), tostring(b))
         local job = a and engine_jobs[a]
         engine_jobs[a or ""] = nil
         if job then job.fail(tostring(b))
@@ -2073,6 +2131,7 @@ function on_room_torrent(m)
     if hash and not (#hash == 40 and hash:match("^%x+$")) then return end
     if room_torrent and room_torrent.hash == hash then return end
     drop_room_torrent()
+    tlog("room torrent: %s, magnet %s, .torrent %s", hash or "none", type(m.magnet) == "string" and "yes" or "no", tostring(m.tfile))
     if not hash or mp.get_property_native("platform") ~= "windows" then return end
     room_torrent = { hash = hash }
     local magnet = type(m.magnet) == "string" and #m.magnet <= 8192 and m.magnet:match("^magnet:%?[^%s%c]*$")
@@ -2083,6 +2142,7 @@ function on_room_torrent(m)
             if tmp then os.remove(tmp) end
             if not room_torrent or room_torrent.hash ~= hash then return end
             if h ~= hash then
+                tlog("room torrent: the engine has %s, not %s", h, hash)
                 if fallback then add(fallback) else osd(T("torrent_failed", "wrong torrent")) end
                 return
             end
@@ -2090,16 +2150,21 @@ function on_room_torrent(m)
             t.files = torrent_files(list)
             torrents[h] = t
             add_torrent_entries(t)
+            tlog("room torrent: %s episodes known", #t.files)
             osd(T("torrent_ready"))
             if host_state then mp.add_timeout(0.5, apply_host_state) end
         end, function(err)
             if tmp then os.remove(tmp) end
+            tlog("room torrent: adding failed: %s", tostring(err))
             if not room_torrent or room_torrent.hash ~= hash then return end
             if fallback then add(fallback) else osd(T("torrent_failed", err)) end
         end)
     end
     if m.tfile == true and host_files and joined_address then
-        fetch_tfile(hash, function(path) add(file_url(path), magnet, path) end, function() add(magnet) end)
+        fetch_tfile(hash, function(path) add(file_url(path), magnet, path) end, function()
+            tlog("room torrent: no .torrent from the host's share port, using the magnet")
+            add(magnet)
+        end)
     else
         add(magnet)
     end
@@ -2120,14 +2185,18 @@ function start_check()
         end
         engine_cmd("probe", hash)
     else
-        check["local"] = current_path() ~= nil
+        -- A guest on its own copy of the room's episode needs no swarm; one still on another file is "away".
+        check["local"] = current_path() ~= nil and host_state ~= nil and media_name() == host_state.file
     end
+    tlog("check start: hash %s, index %s, length %s, own file %s", tostring(check.hash), tostring(i), tostring(check.length),
+         tostring(check["local"]))
     if role == "host" then send("*", { t = "check", on = true }) end
     update_panel()
 end
 
 function stop_check()
     if not check then return end
+    tlog("check stop: %s", utils.format_json(check_result() or {}))
     local had = check
     check = nil
     if had.hash and engine then engine_cmd("probe-stop") end
@@ -2136,13 +2205,17 @@ function stop_check()
 end
 
 -- Bits per second: what the episode needs on average, and what the swarm gave after the first seconds.
+-- speed: the mean of the seconds in which the engine downloaded; 0 when it fetched nothing during the whole
+-- check. buf: seconds of video the player holds, which tells "nothing left to fetch" from "nothing comes".
 function check_result()
     if not check then return nil end
     if check["local"] then return { ["local"] = true } end
-    local r = { peers = check.peers }
+    if not check.hash then return { away = true } end
+    local r = { peers = check.peers, buf = mp.get_property_number("demuxer-cache-duration") }
     local dur = mp.get_property_number("duration")
     if check.length and check.length > 0 and dur and dur > 0 then r.need = check.length * 8 / dur end
-    if check.n > 0 then r.speed = check.sum / check.n end
+    if check.n > 0 then r.speed = check.sum / check.n
+    elseif mp.get_time() >= check.ends then r.speed = 0 end
     return r
 end
 
@@ -2312,6 +2385,7 @@ mp.register_event("file-loaded", function()
     end
     -- The swarm check belongs to the episode it was started on.
     local hash, index = engine_hash(mp.get_property("path"))
+    if hash or room_torrent then tlog("file loaded: %s (%s)", tostring(media_name()), hash and "torrent stream" or "not a torrent stream") end
     if role ~= "join" then
         if check and check.hash ~= hash then stop_check() end
         if check_after_pick and check_after_pick.hash == hash and check_after_pick.i == index then start_check() end

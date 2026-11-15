@@ -69,17 +69,19 @@ Guest (`on_room_torrent`):
 ## Swarm check
 
 - **Start:** when an episode is picked with `torrent_check > 0`, `check_after_pick` is set and `pause` turns on before the load. In the host's `file-loaded` that matches it, `start_check()` runs. The menu item Check the torrent pauses and starts it as well.
-- **Each player:** `check = {hash, length, started, ends, sum, n, peers}`. It sends `probe <hash>`. Samples count only from 5 s after the start, while peers are still connecting. `check_result()`:
+- **Each player:** `check = {hash, length, started, ends, sum, n, peers}`. It sends `probe <hash>`. A sample counts only from 5 s after the start (peers are still connecting) and only if the engine downloaded something in that second. TorrServer leaves `download_speed` out of its status when it is 0, and it fetches nothing while its own cache and mpv's are full, which is common while paused on an episode watched before. A zero can mean "nothing left to fetch" as well as "nothing comes". `check_result()`:
   - `need` is `length × 8 / duration`, in bit/s;
-  - `speed` is the mean of the samples × 8;
-  - on a non-engine file it is `{local = true}`.
+  - `speed` is the mean of the counted samples × 8. It is 0 once the check time has run out with none counted, and nil before that;
+  - `buf` is mpv's `demuxer-cache-duration`;
+  - `{local = true}` for a guest on its own copy of the host's file, `{away = true}` for a guest still on another file.
 - **Room:** the host broadcasts `{t: "check", on}`. Guests set `check_wanted`, run their own check (again after every `file-loaded`), and send `{t: "check", r}` every second. The host stores `g.check` (numbers checked) and puts every member's `check` and `room.check = {left}` into the room info.
 - **Panel:** while a check runs, `update_panel()` shows `check_lines()` instead of the member list:
   - ✓ when speed ≥ 1.5 × need;
   - ⚠ from 1 ×;
   - ✗ below;
+  - "N s of video buffered" (✓) when nothing was downloaded but the player already holds at least 60 s (`CHECK_BUFFER_OK`);
   - "measuring" without data;
-  - "own file" for a local copy.
+  - "own file" for a local copy, "not on this episode yet" for an `away` guest.
 
   The lines are also published as `user-data/watch-together/panel` for tests.
 - **End:** the first unpause on the host, or when alone, ends it: the pause observer runs before the `expected_pause` filter, so a guest's play request ends it too. So do a file change on the host, or leaving.
@@ -102,8 +104,23 @@ Guest (`on_room_torrent`):
 - old entries dropped;
 - clipboard open plus resume;
 - back to a local file;
-- bad hashes and a magnet with a line break never reach the engine.
+- bad hashes and a magnet with a line break never reach the engine;
+- a guest's torrent log records the room torrent, its episodes and the check.
 
-Last run: 22/22.
+Last run: 23/23.
+
+## Log
+
+`~~/watch_together_torrent.log` (`%APPDATA%\mpv\watch_together_torrent.log`), also in mpv's log at info. `tlog()` writes:
+- the helper starting and exiting, with its stderr;
+- the engine download and `ready`;
+- every add and its answer (hash, number of files), and engine errors;
+- the picked episode;
+- the room torrent a guest got, whether the .torrent came from the share port, and how many episodes it knows;
+- a room file the guest doesn't have (once per name);
+- every `file-loaded` while torrents are involved;
+- the check start and stop, and each speed sample with the peer count and seconds buffered.
+
+Past 1 MB at startup the log moves to `.old`. When something fails on a friend's PC, ask for this file.
 
 Not covered offline: the real engine download and hash check, TorrServer's own behaviour (speed units, idle close, seeking in a real swarm), and the firewall prompt. These need a live run with the network. The pinned-engine mistake (Silo.2, bugs.md) shows why: the fake engine cannot catch a real engine that refuses its command line.

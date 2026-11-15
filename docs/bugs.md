@@ -111,5 +111,11 @@ Symptom (real use): opening a .torrent downloaded the engine, then showed "Torre
 ## The engine watchdog could kill an unrelated process
 Risk (found while debugging the above): the watchdog killed the engine's pid when mpv exited. An engine that had already died left that pid free, and Windows may reuse it. Fix: the watchdog stops the pid only if its path is our `TorrServer.exe`. Verified with two `ping.exe` stand-ins: the matching one was killed, the one with another path was left running.
 
+## The swarm check showed ✗ 0.0 Mbit/s while the torrent played fine
+Symptom (real use): the host's check showed "✗ 0.0 of ~8.5 Mbit/s, 19 peers" on an episode it had opened before. Cause: TorrServer (MatriX.150) leaves `download_speed` out of its status when it is 0 (checked live: the field appeared only in the seconds it downloaded). While paused, it fetches nothing once its cache and mpv's are full. Every sample was 0. Fix: a second without download is not a sample; with none at all, a player holding 60 s or more shows "✓ N s of video buffered". Only one that holds less, after the full check time, shows ✗ 0. Verified: tests\torrent.ps1 (buffered and slow cases); live stats read from the user's engine.
+
+## A guest that never reached the episode was "measuring" forever
+Symptom (real use): a guest's check line stayed at "measuring". Cause not confirmed yet; the likely one is that the guest's engine had no file list for the torrent, so the guest stayed on its old file, and a check on a file that is no torrent stream was counted as "measuring". Fix so far: such a guest shows "not on this episode yet", and torrent mode now writes `watch_together_torrent.log` (see torrent.md, Log) to find the real cause.
+
 ## A torrent added twice never answered the first time
 Risk (found in review): `torrent.ps1` kept one pending add per hash, so a second add of the same torrent replaced the first, and the first caller (a deferred `on_load` hook) would wait forever. Fix: each add is its own job. Not reproduced.

@@ -90,6 +90,8 @@ Instead of files on disk, the host can open a magnet link or a .torrent. Nobody 
 
    Press Space whenever you are ready; that ends the check. Watch together → Check the torrent (Проверить раздачу) runs it again.
 
+If a guest's check line stays at "not on this episode yet", the guest's player has no list of the torrent's files yet. Torrent mode keeps a log in `%APPDATA%\mpv\watch_together_torrent.log`; send it along when something goes wrong.
+
 In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly.
 
 A jump to a part that hasn't been downloaded yet makes the engine fetch that part first, so the room waits a few seconds ("Waiting for: Alex (buffering)"). How long depends on the swarm. A torrent needs more download speed than the video's bitrate on every PC; the check shows whether there is enough.
