@@ -1,6 +1,6 @@
 # mpv watch-together
 
-An mpv script for watching the same video with friends on other PCs. Everyone plays their own copy of the file, and the script keeps pause, seeking, playback speed and the current episode in sync over TCP. One person hosts the room and any number of guests join it. The connection runs through [Porthole](https://store.steampowered.com/app/4963920/Porthole_Local_Port_Sharing/), a free Steam app that shares a local port with Steam friends, so nobody has to open ports on the router.
+An mpv script for watching the same video with friends on other PCs. Everyone plays their own copy of the file, and the script keeps pause, seeking, playback speed and the current episode in sync over TCP. One person hosts the room and any number of guests join it. The connection runs through [Porthole](https://store.steampowered.com/app/4963920/Porthole_Local_Port_Sharing/), a free Steam app that shares a local port with Steam friends, so nobody has to open ports on the router. Instead of files, the host can also open a magnet link or a .torrent, and everyone watches it while it downloads, with no file on disk (see [Watching a torrent](#watching-a-torrent)).
 
 The menu and on-screen messages follow the Windows display language: Russian on Russian Windows, English on any other. This README gives the English labels with the Russian ones in parentheses. Porthole labels are quoted from its Russian interface.
 
@@ -92,7 +92,9 @@ Instead of files on disk, the host can open a magnet link or a .torrent. Nobody 
 
 If a guest's check line stays at "not on this episode yet", the guest's player has no list of the torrent's files yet. Torrent mode keeps a log in `%APPDATA%\mpv\watch_together_torrent.log`; send it along when something goes wrong.
 
-In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly.
+In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly. A guest with a plugin older than 1.6 doesn't see the torrent, and the host gets a message about it.
+
+Privacy: in a room each guest's own engine joins the host's torrent, so every guest's IP address is visible to that swarm, as with any torrent client. The guests also get the magnet link or the .torrent as the host has it, with its tracker addresses. A private tracker's address often carries a personal key, so open such a torrent in a room only with people you trust.
 
 Two minutes before a torrent episode ends, each player's engine starts fetching the beginning of the next episode (128 MB), so the next one starts right away, in a room and alone. `torrent_preload` sets how early.
 
@@ -121,6 +123,10 @@ Empty output means Porthole has not opened the port there. Either the guest has 
 Downloading or watching from the host fails. Check port 47801 the same way on the guest's PC (`Get-NetTCPConnection -LocalPort 47801 -State Listen`). The host has to share it in the lobby, and the guest has to allow it.
 
 "Error: cannot listen on 127.0.0.1:47800" means another program already uses the port. Pick a different port on every PC (see below) and share that port in Porthole.
+
+A guest's torrent never loads (its check line stays at "not on this episode yet", or "Torrent: …" shows an error). A proxy or VPN app can be in the way: one friend's player loaded the torrent only after the proxy app was set to direct. Also check that Windows let TorrServer use the network. The guest's `%APPDATA%\mpv\watch_together_torrent.log` shows what the engine did, and the player tries again every 30 seconds by itself.
+
+"Torrent: the engine exited: …" shows the last line the engine wrote, and the whole log is in `%APPDATA%\mpv\watch_together_engine\engine-errors.log`. "The engine started without its password, so it is not used" means TorrServer could not read its password file; the plugin refuses an engine that would answer anyone.
 
 A member "has an old plugin version": versions before 1.1 cannot join a 1.1 room. That person should install the latest release once by hand; later versions update themselves.
 
@@ -155,7 +161,7 @@ torrent_preload=120 # seconds before a torrent episode ends to fetch the next on
 auto_update=yes     # check GitHub releases when mpv starts
 ```
 
-The on/off settings from the menu are stored in `%APPDATA%\mpv\watch_together_settings.json` and take priority over this file. Resume points are in `watch_together_history.json` in the same folder.
+The on/off settings from the menu are stored in `%APPDATA%\mpv\watch_together_settings.json` and take priority over this file. Resume points (per folder of episodes, or per torrent) are in `watch_together_history.json` in the same folder.
 
 Without Porthole, any TCP connection works (LAN, Tailscale, a forwarded port). Set `bind=0.0.0.0` on the host. The host chooses Copy invite (Скопировать приглашение) and sends the copied text, for example `100.64.0.5:47800`, to the guests. Each guest copies it and chooses Join by copied address (Подключиться по скопированному адресу). The script picks a Tailscale address first, then a home network one. With Porthole the copied address is `127.0.0.1:<port>`, which is what Join a friend uses anyway.
 
@@ -170,7 +176,9 @@ powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\path\to\mpv.exe
 powershell -ExecutionPolicy Bypass -File tests\scale.ps1 -Mpv C:\path\to\mpv.exe -GuestCount 20
 powershell -ExecutionPolicy Bypass -File tests\buffering.ps1 -Mpv C:\path\to\mpv.exe   # needs python
 powershell -ExecutionPolicy Bypass -File tests\features.ps1 -Mpv C:\path\to\mpv.exe
+powershell -ExecutionPolicy Bypass -File tests\stream.ps1 -Mpv C:\path\to\mpv.exe
 powershell -ExecutionPolicy Bypass -File tests\torrent.ps1 -Mpv C:\path\to\mpv.exe     # needs python, no network
+powershell -ExecutionPolicy Bypass -File tests\engine.ps1 -Mpv C:\path\to\mpv.exe      # the engine helper with a stand-in TorrServer, no network
 ```
 
 To measure a real tunnel, run `tests\speed.ps1 -Name "<file name>"` on a guest's PC while the host has a room open with that file in its playlist. It reports the download speed from the host with 1, 2, 4 and 8 connections.
