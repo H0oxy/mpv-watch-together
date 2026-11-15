@@ -21,8 +21,17 @@ $h1 = '1111111111111111111111111111111111111111'   # a magnet
 $h2 = '2222222222222222222222222222222222222222'   # a .torrent file
 $tfile = Join-Path $run 'show two.torrent'; [IO.File]::WriteAllText($tfile, $h2)
 $speedFile = Join-Path $run 'speed.txt'; [IO.File]::WriteAllText($speedFile, '50000000')
+# A release with its voice-over and ASS subtitles in folders of their own, and a font for the subtitles.
+# The episodes stand in for audio files: audio-add takes their audio track.
+$h4 = '4444444444444444444444444444444444444444'
+$ass = Join-Path $run 'sub.ass'
+[IO.File]::WriteAllText($ass, "[Script Info]`nScriptType: v4.00+`n`n[Events]`nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`nDialogue: 0,0:00:01.00,0:00:50.00,Default,,0,0,0,,hello`n")
 $cfg = @{ torrents = @{ $h1 = @(@('Show/S01E01.mkv', $ep1), @('Show/S01E02.mkv', $ep2), @('Show/cover.jpg', $cover));
-                        $h2 = @(@('Two/T01.mkv', $ep2), @('Two/T02.mkv', $ep1)) };
+                        $h2 = @(@('Two/T01.mkv', $ep2), @('Two/T02.mkv', $ep1));
+                        $h4 = @(@('Ext/Show 01.mkv', $ep1), @('Ext/Show 02.mkv', $ep2),
+                                @('Ext/Rus Sound/Anidub/Show 01.mka', $ep2), @('Ext/Rus Sound/Anidub/Show 02.mka', $ep1),
+                                @('Ext/Rus Subs/Show 01.ass', $ass), @('Ext/Rus Subs/Show 02.ass', $ass),
+                                @('Ext/Rus Subs/Fonts/Some Font.ttf', $cover)) };
           speed_file = $speedFile }
 $cfgFile = Join-Path $run 'fake.json'; [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
 $magnet = "magnet:?xt=urn:btih:$h1&dn=Show&tr=udp%3A%2F%2Ftracker.example%3A80"
@@ -49,11 +58,11 @@ function Wait-Until([scriptblock]$cond, [double]$s = 5) {
     while ([DateTime]::Now -lt $e) { if (& $cond) { return $true }; Start-Sleep -Milliseconds 200 }
     & $cond
 }
-function Start-Player([string]$n, [string[]]$files, [int]$port = $Port) {
+function Start-Player([string]$n, [string[]]$files, [int]$port = $Port, [string]$lang = 'en') {
     $dir = Join-Path $run "cfg-$n"
     New-Item -ItemType Directory -Force $dir | Out-Null
     $opts = "watch_together-port=$port,watch_together-share_port=$SharePort,watch_together-auto_update=no," +
-            "watch_together-lang=en,watch_together-name=$n,watch_together-torrent_check=4," +
+            "watch_together-lang=$lang,watch_together-name=$n,watch_together-torrent_check=4," +
             "watch_together-torrent_url=http://127.0.0.1:$EnginePort"
     Start-Process $Mpv -PassThru -WindowStyle Hidden -ArgumentList (@("--config-dir=`"$dir`"", '--vo=null', '--ao=null', '--idle=yes',
         "--script=$script", "--script-opts=$opts", "--input-ipc-server=wt-tor-$n") + ($files | ForEach-Object { "`"$_`"" }))
@@ -173,23 +182,50 @@ try {
     Check "the room's old torrent leaves the guests' playlists" (-not (@((P $b 'playlist') | Where-Object { $_.filename -like "*$h1*" }))) ''
     $null = I $a @('set_property', 'pause', $false)
 
-    # Resume memory per torrent: back to the magnet, from the clipboard this time; the chooser preselects the
-    # episode watched last. The user's clipboard is put back afterwards.
+    # Resume memory per torrent: back to the magnet, from the clipboard this time. A torrent watched before
+    # asks nothing: it goes on with the episode and time it stopped at (an open chooser would hold it).
+    # The user's clipboard is put back afterwards.
     $saved = P $a 'clipboard/text'
     $null = I $a @('set_property', 'clipboard/text', $magnet)
     $null = I $a @('script-message', 'watch-together-open-torrent')
-    Start-Sleep 1.5   # the file list, then the chooser
-    $null = I $a @('script-message', 'watch-together-pick')   # the preselected one
     $ok = Wait-Until { (Title $a) -eq 'S01E01.mkv' -and (P $a 'time-pos') -gt 100 -and (Engine-Count $a) -eq 2 } 10
     if ($null -ne $saved) { $null = I $a @('set_property', 'clipboard/text', $saved) }
     $pl = @((P $a 'playlist') | ForEach-Object { $_.filename })
-    Check 'from the clipboard, the chooser resumes the torrent where it stopped' $ok ("{0} at {1}; {2}" -f (Title $a), (P $a 'time-pos'), ($pl -join ', '))
+    Check 'from the clipboard, a torrent watched before goes on where it stopped, no chooser' $ok ("{0} at {1}; {2}" -f (Title $a), (P $a 'time-pos'), ($pl -join ', '))
     $null = I $a @('set_property', 'pause', $false)
 
     # Back to a local file: the room is no torrent room any more.
     $null = I $a @('loadfile', $ep1, 'replace')
     $ok = Wait-Until { (Engine-Count $b) -eq 0 } 10
     Check 'host back on a local file: guests drop the torrent episodes' $ok ("b streams: {0}" -f (Engine-Count $b))
+
+    # Extra tracks: E (Russian display language) opens a release whose voice-over and ASS subtitles lie in
+    # folders of their own. Each episode gets its own files as tracks, the Russian voice-over plays, and the
+    # subtitles' font is fetched and used from the next episode on.
+    $procs += Start-Player 'E' @($ep1) $Port 'ru'
+    $pe = Open-Ipc 'wt-tor-E'
+    [void](Wait-Until { (P $pe 'time-pos') -gt 0 } 10)
+    $fontDir = Join-Path $env:TEMP "watch-together\fonts\$h4"
+    Remove-Item -Recurse -Force $fontDir -ErrorAction SilentlyContinue
+    $null = I $pe @('loadfile', "magnet:?xt=urn:btih:$h4", 'replace')
+    [void](Wait-Until { (Engine-Count $pe) -eq 2 } 10)
+    Start-Sleep -Milliseconds 300
+    $null = I $pe @('script-message', 'watch-together-pick', '1')
+    # (The stand-in audio files are episodes, so audio-add brings their video along; only audio and subtitles count.)
+    function Ext-Tracks($ipc) { @((P $ipc 'track-list') | Where-Object { $_.external -and $_.type -ne 'video' }) }
+    function Show-Tracks($ipc) { (Ext-Tracks $ipc | ForEach-Object { "{0} '{1}' {2} sel={3} {4}" -f $_.type, $_.title, $_.lang, $_.selected, $_.'external-filename' }) -join ' | ' }
+    $ok = Wait-Until { (Title $pe) -eq 'Show 01.mkv' -and (Ext-Tracks $pe).Count -eq 2 } 15
+    $audio = Ext-Tracks $pe | Where-Object { $_.type -eq 'audio' }
+    $sub = Ext-Tracks $pe | Where-Object { $_.type -eq 'sub' }
+    Check 'an episode gets its voice-over and subtitles from the torrent' ($ok -and $audio.title -eq 'Anidub' -and $audio.lang -eq 'ru' -and
+        $audio.'external-filename' -like "*link=$h4&index=3&*" -and $sub.title -eq 'Rus Subs' -and $sub.'external-filename' -like '*index=5&*') (Show-Tracks $pe)
+    Check 'a Russian player hears the Russian voice-over first' ($audio.selected -eq $true) (Show-Tracks $pe)
+    $ok = Wait-Until { Test-Path (Join-Path $fontDir '7.ttf') } 10
+    Check "the subtitles' font is fetched" $ok $fontDir
+    $null = I $pe @('playlist-next')
+    $ok = Wait-Until { (Title $pe) -eq 'Show 02.mkv' -and @(Ext-Tracks $pe | Where-Object { $_.'external-filename' -like '*index=4&*' -or $_.'external-filename' -like '*index=6&*' }).Count -eq 2 } 15
+    Check 'the next episode gets its own tracks' $ok (Show-Tracks $pe)
+    Check 'the font folder applies from the next episode' ((P $pe 'sub-fonts-dir') -eq $fontDir) (P $pe 'sub-fonts-dir')
 
     # A raw host sends bad torrent messages; nothing but a clean magnet may reach D's engine.
     $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $RawPort)

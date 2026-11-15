@@ -227,7 +227,7 @@ local STRINGS = {
         bad_torrent_clipboard = "В буфере обмена нет magnet-ссылки или пути к .torrent",
         torrent_opening = "Торрент: получаю список файлов…",
         torrent_choose = "С какой серии начать?",
-        torrent_stopped_at = "остановились на %s",
+        torrent_resuming = "Продолжаю: %s с %s",
         torrent_empty = "В торренте нет файлов",
         torrent_failed = "Торрент: %s",
         torrent_room = "Комната смотрит торрент, подключаюсь к раздаче…",
@@ -355,7 +355,7 @@ local STRINGS = {
         bad_torrent_clipboard = "No magnet link or .torrent path in the clipboard",
         torrent_opening = "Torrent: getting the file list…",
         torrent_choose = "Start from which episode?",
-        torrent_stopped_at = "stopped at %s",
+        torrent_resuming = "Resuming %s at %s",
         torrent_empty = "The torrent has no files",
         torrent_failed = "Torrent: %s",
         torrent_room = "The room watches a torrent, joining the swarm…",
@@ -448,7 +448,8 @@ local add_streams, stop_stream
 -- torrents: every player streams from its own engine, the host only tells guests which torrent
 -- Our engine's address comes from torrent.ps1 once it runs (a free port by default); torrent_url is the user's.
 local engine_base = o.torrent_url ~= "" and (o.torrent_url:gsub("/+$", "")) or nil
-local torrents = {}         -- hash -> {hash, magnet, tfile, files = {{i, name, path, length}}}
+-- hash -> {hash, magnet, tfile, files = {{i, name, path, length}}, extras = {video i -> tracks}, fonts_dir}
+local torrents = {}
 local room_torrent          -- guest: {hash} the host's room watches
 local sent_torrent          -- host: hash last told to the guests ("" = none)
 local check                 -- this player's swarm-speed measurement: {hash, length, started, ends, sum, n, peers}
@@ -1940,8 +1941,7 @@ local job_seq = 0
 local pending_pick          -- finishes the episode chooser that is open now
 local tfile_job             -- guest: {hash, ok, fail, handle} while the host's .torrent downloads
 
-local VIDEO_EXT = {}
-for ext in ("mkv mp4 avi webm m4v mov ts m2ts wmv flv mpg mpeg ogv 3gp"):gmatch("%S+") do VIDEO_EXT[ext] = true end
+local tracks = require("tracks")  -- which subtitle and audio files go with which video
 
 -- In mpv's config folder; %TEMP% without one.
 local function engine_exe()
@@ -1995,37 +1995,56 @@ local function natural_key(s)
     return (s:lower():gsub("%d+", function(d) return string.rep("0", 12 - #d) .. d end))
 end
 
--- The engine's file list as playlist material: videos only (all files if there are none), in natural order.
--- Names come from the torrent, so they only go into URLs (percent-encoded), comparisons and labels.
-local function torrent_files(list)
+-- The engine's file list: the videos become the playlist (all files if there are none), in natural order;
+-- subtitle and audio files go with their videos (tracks.lua), font files are fetched for ASS subtitles.
+-- Names come from the torrent, so they only go into URLs (percent-encoded), comparisons, labels and track
+-- titles (an argument of sub-add, never a command).
+local function set_torrent_files(t, list)
     local all, videos = {}, {}
     for _, f in ipairs(list) do
-        if type(f) == "table" and type(f.i) == "number" and f.i >= 1 and f.i == math.floor(f.i) and type(f.path) == "string" then
+        if type(f) == "table" and type(f.i) == "number" and f.i >= 1 and f.i == math.floor(f.i) and type(f.path) == "string"
+           and #f.path <= 1024 and not f.path:find("%c") then
             local name = f.path:match("[^/\\]+$")
-            if name and #name <= 255 and not name:find("%c") then
+            if name and #name <= 255 then
                 local e = { i = f.i, name = name, path = f.path, length = tonumber(f.length) or 0 }
                 all[#all + 1] = e
-                if VIDEO_EXT[(name:match("%.([^.]+)$") or ""):lower()] then videos[#videos + 1] = e end
+                if tracks.kind(name) == "video" then videos[#videos + 1] = e end
             end
         end
     end
     local files = #videos > 0 and videos or all
     table.sort(files, function(x, y) return natural_key(x.path) < natural_key(y.path) end)
+    t.files = files
+    local fonts
+    t.extras, fonts = tracks.attach(all)
+    local n, ass = 0, false
+    for _, l in pairs(t.extras) do
+        for _, e in ipairs(l) do
+            n = n + 1
+            if e.kind == "sub" and (tracks.ext(e.name) == "ass" or tracks.ext(e.name) == "ssa") then ass = true end
+        end
+    end
+    tlog("extra tracks: %d for %d videos; %d font files", n, #videos, #fonts)
+    -- In %TEMP%, by torrent.ps1; they apply from the next episode that loads after they are in.
+    if ass and #fonts > 0 and not t.fonts_asked then
+        t.fonts_asked = true
+        local spec = {}
+        for _, f in ipairs(fonts) do spec[#spec + 1] = f.i .. ":" .. tracks.ext(f.name) .. ":" .. math.floor(f.length) end
+        engine_cmd("fonts", t.hash, table.concat(spec, ";"))
+    end
     return files
 end
 
--- Which episode to start from; the one watched last is preselected and resumes where it stopped.
--- Esc starts the preselected one: the file being opened waits for this answer.
+-- Which episode to start from. A torrent watched before goes on at once from the episode and time it
+-- stopped at (another episode is in the playlist); a new one asks. Esc starts the first: the file being opened
+-- waits for this answer.
 local function choose_episode(t, cb)
     local h = load_history()["btih:" .. t.hash]
     if type(h) ~= "table" or type(h.file) ~= "string" or type(h.pos) ~= "number" then h = nil end
-    local default, items = 1, {}
+    local default, items, known = 1, {}, false
     for k, f in ipairs(t.files) do
         items[k] = short(f.path, 80) .. " — " .. mb(f.length)
-        if h and f.name == h.file then
-            default = k
-            items[k] = items[k] .. " — " .. T("torrent_stopped_at", fmt_time(h.pos))
-        end
+        if h and f.name == h.file then default, known = k, true end
     end
     local picked = false
     local function finish(k)
@@ -2033,6 +2052,11 @@ local function choose_episode(t, cb)
         picked, pending_pick = true, nil
         k = (type(k) == "number" and t.files[k]) and k or default
         cb(k, (h and t.files[k].name == h.file) and h.pos or nil)
+    end
+    if known then
+        osd(T("torrent_resuming", short(t.files[default].name, 60), fmt_time(h.pos)))
+        finish(default)
+        return
     end
     local ok, input = pcall(require, "mp.input")
     if #t.files == 1 or not ok then finish(default) return end
@@ -2049,11 +2073,11 @@ local function open_torrent(link, index, done)
     mp.osd_message(T("torrent_opening"), 90)
     local tfile = not link:match("^magnet:") and link or nil
     add_torrent(tfile and file_url(tfile) or link, function(hash, list)
-        local files = torrent_files(list)
+        local t = torrents[hash] or {}
+        t.hash, t.magnet, t.tfile = hash, not tfile and link or nil, tfile
+        local files = set_torrent_files(t, list)
         mp.osd_message("", 0)
         if #files == 0 then osd(T("torrent_empty")) done() return end
-        local t = torrents[hash] or {}
-        t.hash, t.magnet, t.tfile, t.files = hash, not tfile and link or nil, tfile, files
         torrents[hash] = t
         if index then
             for k, f in ipairs(files) do mp.commandv("loadfile", engine_url(hash, f), "insert-at", tostring(index + k)) end
@@ -2123,7 +2147,8 @@ mp.register_script_message("watch-together-pick", function(k)
     if pending_pick then pending_pick(tonumber(k)) end
 end)
 
--- From torrent.ps1: engine <bytes> <total> | ready | files <id> <hash> <json> | stat <hash> <B/s> <peers> <seeders> | error <id> <text>
+-- From torrent.ps1: engine <bytes> <total> | ready | files <id> <hash> <json> | stat <hash> <B/s> <peers> <seeders> |
+-- fonts <hash> <failed> | error <id> <text>
 mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
     if not engine then return end
     if kind == "engine" then
@@ -2144,6 +2169,11 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
         engine.ready = true
         for _, args in ipairs(engine.queue) do mp.commandv(unpack(args)) end
         engine.queue = {}
+    elseif kind == "fonts" then
+        local t = torrents[a or ""]
+        if not t then return end
+        t.fonts_dir = (os.getenv("TEMP") or ".") .. "\\watch-together\\fonts\\" .. t.hash  -- where torrent.ps1 puts them
+        tlog("fonts of %s are in (%s failed)", t.hash, tostring(b))
     elseif kind == "preloaded" or kind == "preload-failed" then
         tlog("preload of #%s in %s: %s", tostring(b), tostring(a), kind == "preloaded" and "done" or tostring(c))
     elseif kind == "restarted" then
@@ -2300,7 +2330,7 @@ function on_room_torrent(m)
                 return
             end
             local t = torrents[h] or { hash = h }
-            t.files = torrent_files(list)
+            set_torrent_files(t, list)
             torrents[h] = t
             add_torrent_entries(t)
             tlog("room torrent: %s episodes known", #t.files)
@@ -2395,6 +2425,66 @@ mp.register_script_message("watch-together-check", function()
     if role == "join" or not engine_hash(mp.get_property("path")) then return end
     if not mp.get_property_native("pause") then mp.set_property_native("pause", true) end
     start_check()
+end)
+
+-- Which audio a Russian player hears first, unless it set alang or aid itself: a Russian track (the video's
+-- own first, then the release's in folder order), else the release's first voice-over of unknown language
+-- (studios rarely say "rus", and a separate audio file is almost always a translation). Else mpv's choice.
+-- mpv itself keeps no choice from one file to the next, so this runs for every episode.
+local function pick_audio(list, urls)
+    if lang ~= "ru" or mp.get_property("options/aid") ~= "auto" then return end
+    local alang = mp.get_property_native("options/alang")
+    if type(alang) == "table" and #alang > 0 then return end
+    local ext, choice = {}, nil
+    for _, tr in ipairs(mp.get_property_native("track-list") or {}) do
+        if tr.type == "audio" then
+            if tr.external then ext[tr["external-filename"] or ""] = tr.id
+            elseif not choice and ({ ru = true, rus = true, russian = true })[(tr.lang or ""):lower()] then choice = tr.id end
+        end
+    end
+    for k, e in ipairs(list) do
+        if not choice and e.kind == "audio" and e.lang == "ru" then choice = ext[urls[k]] end
+    end
+    for k, e in ipairs(list) do
+        if not choice and e.kind == "audio" and not e.lang and e.voice then choice = ext[urls[k]] end
+    end
+    if not choice then return end
+    tlog("audio: track %d first", choice)
+    mp.set_property("file-local-options/aid", tostring(choice))
+end
+
+-- The episode's own subtitle and audio files from the torrent join its tracks before mpv picks among them.
+-- They are added all at once, since each waits for its first pieces from the swarm, for at most 5 s; one
+-- that takes longer is still added, only after the choice. Fonts fetched for the torrent apply from here.
+mp.add_hook("on_preloaded", 50, function(hook)
+    local path = mp.get_property("path")
+    local hash, index = engine_hash(path)
+    local t = hash and torrents[hash]
+    if not t then return end
+    if t.fonts_dir then mp.set_property("file-local-options/sub-fonts-dir", t.fonts_dir) end
+    local list = t.extras and t.extras[index] or {}
+    local urls, waiting = {}, true
+    local function go_on()
+        if not waiting then return end
+        waiting = false
+        if mp.get_property("path") == path then pick_audio(list, urls) end  -- not if another file was asked for meanwhile
+        hook:cont()
+    end
+    if #list == 0 then pick_audio(list, urls) return end
+    hook:defer()
+    local left, names = #list, {}
+    for k, e in ipairs(list) do
+        urls[k] = engine_url(hash, e)
+        names[k] = e.kind .. " " .. e.title .. (e.lang and (" [" .. e.lang .. "]") or "")
+        mp.command_native_async({ e.kind == "sub" and "sub-add" or "audio-add", urls[k], "auto", e.title, e.lang or "" },
+            function(ok, _, err)
+                if not ok then tlog("track %s: %s", e.path, tostring(err)) end
+                left = left - 1
+                if left == 0 then go_on() end
+            end)
+    end
+    tlog("tracks for #%d: %s", index, table.concat(names, ", "))
+    mp.add_timeout(5, go_on)
 end)
 
 end  -- torrents

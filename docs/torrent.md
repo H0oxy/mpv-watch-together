@@ -28,6 +28,7 @@ Commands (Lua → `script-message watch-together-torrent-cmd …`, seen by `torr
 |---|---|---|
 | `add <id> <link>` | `POST /torrents {action: add, link, save_to_db: true}`, then `get` every second until `file_stats` appear (90 s limit) | `files <id> <hash> <json [{i, path, length}]>` or `error <id> <text>` |
 | `probe <hash>` / `probe-stop` | `get` every second | `stat <hash> <bytes/s> <active peers> <seeders>` |
+| `fonts <hash> <i:ext:length;…>` | saves each file as `%TEMP%\watch-together\fonts\<hash>\<i>.<ext>` through `/stream?link&index&play`, one at a time, keeping one of the right size from earlier | `fonts <hash> <failed count>` |
 
 `link` is a magnet, a bare hash, or `file:///C:/path/x.torrent`; TorrServer's `ParseLink` takes all three. `save_to_db` matters: TorrServer closes a torrent that has had no reader for up to a minute (`TorrentDisconnectTimeout`), and a later `/stream?link=<hash>` brings it back from its db with the original trackers. Without the db it would come back from the hash alone.
 
@@ -42,14 +43,42 @@ An episode is `<ENGINE_BASE>/stream/<pct-encoded file name>?link=<hash>&index=<i
 - `engine_hash(path)` returns the hash and the index of such a URL, or nil.
 - The `on_load` hook at priority 50 gives these URLs the online buffer (development.md, Online buffer and the RAM guard) and sets `force-media-title` to the file name. TorrServer MatriX.150 reads ahead a fixed 16 MB past mpv's read position (`updateRA`: `adj := int64(16 << 20)`), so mpv's buffer, not the engine's `cacheSize`, decides how far ahead a torrent downloads.
 
-Only video files (by extension) go into the playlist, or all files if there are none, in natural order (`S1E2` before `S1E10`).
+Only video files (by extension) go into the playlist, or all files if there are none, in natural order (`S1E2` before `S1E10`). `set_torrent_files()` does this for the host and for guests, and also works out the extra tracks (below).
+
+## Extra tracks
+
+Releases often carry voice-overs and subtitles as separate files, laid out in any way: `Rus Sound/<studio>/<episode>.mka`, `Subs/Show.S01E02.rus.srt`, `.ru.srt` next to the video, a folder per episode, per season. mpv finds such files only for local videos in the same folder, so torrent mode attaches them itself. `tracks.lua` (pure Lua; `tests\tracks.ps1` runs it on file lists) decides which file goes with which video; `main.lua` adds them.
+
+**Kinds** by extension: video, subtitles (`srt ass ssa vtt sup smi`), audio (`mka aac ac3 eac3 dts flac mp3 opus m4a thd` …), fonts (`ttf otf ttc`). An audio or subtitle file under a folder named OST, Soundtrack, Music (or Cyrillic equivalents) is an album, not a track (unless the videos' own path has that word).
+
+**Matching.** Names become tokens: words and numbers, `01` = `1`, an 8-hex CRC dropped, and a number right after letters also gives a pair (`S02E01` → `s 2 e 1 s:2 e:1`). Nothing depends on fixed words: what all the files of one set share is taken off, and the rest is what tells them apart.
+
+1. **Scope:** the nearest folder above the track that holds videos. Only those videos are candidates (a season folder keeps season 1's subtitles off season 2).
+2. **One video in scope** (a film, a folder per episode): the track is its own.
+3. **Several:** the video's own part = its tokens minus what all videos in scope share; the track's own part = its tokens minus what all tracks of its kind in its folder share. A lone track, or a folder whose tracks share their numbers (rus + eng of one episode), takes off what the videos share instead.
+   - Every number of the track's own part must be in the video's own part (as a set: a season number is often in both the folder and the name of a video, once in a subtitle's name). A track whose own part has no number is not placed.
+   - Among those videos, the score counts the video's own numbers found in the track's tokens (+1) or missing (−1); words (`sp`, a title, `s:2` pairs, the track's studio) only decide between equal numbers.
+   - The single best wins. A tie places nothing: a missing track beats one on the wrong episode.
+
+Checked layouts (tests\tracks.lua): a studio folder plus two subtitle folders with specials `Sp 1` beside episode `01` and a Bonus folder; flat `.ru.srt` plus studio folders named only `E01.mka` or `2x01`, with a constant `S02` and `DDP5.1`; rus/eng in one Subs folder; season folders with episode titles only in the video names (`s02e05_Red.Herring.2`); a film with Subs/Audio and an OST album; a folder per episode; two studios side by side (`01 [AniLibria]`, `01 [Anidub]`); voice-overs of all languages under one Cyrillic folder; a lone subtitle; a fansub release with CRCs; two seasons in one folder; and what cannot be told (no number, other numbering), which stays unplaced.
+
+**Title and language.** The title is the track's folders below the scope, without folders every placed track of its kind shares ("Rus Sound", "Озвучки", whatever the name), plus the words of its file name the video lacks (`rus`, `forced`, `LostFilm`); one studio's folder shared by all its tracks is still the name when nothing else is left. The language is, in this order: a language word in the file name's own part or the nearest folder (`rus`, `eng`, `RusSub`, `русский`; two-letter codes only as the name's last part, `x.ru.srt`, because `it`, `de` are title words), else `ru` for a known Russian studio (a list of Latin names in tracks.lua) or Cyrillic in the title. A folder shared by all tracks gives no Cyrillic hint: "Озвучки/ENG/…" is English. Tracks named commentary or original are no voice-over.
+
+**Adding.** An `on_preloaded` hook (the file is open, tracks not chosen yet) runs `sub-add` / `audio-add <engine url> auto <title> <lang>` for the episode's tracks, all at once through `mp.command_native_async` with the hook deferred: each waits for its first pieces from the swarm, so one by one they would add up. The hook goes on when all are in or after 5 s; a later one still joins the track list, only after mpv's choice. Measured with mpv 0.41: tracks added this way take part in mpv's own choice (`alang`/`slang`), and three tracks behind a server that waits 2 s per request were in after 2.1 s.
+
+**Which audio plays.** mpv keeps no manual track choice from one file to the next (checked: aid=2 picked in file 1, file 2 started on the default), and it never prefers an external track of unknown language. So for a player whose display language is Russian, with no `alang` and `aid=auto`, `pick_audio()` sets `file-local-options/aid` per episode: the video's own Russian track, else the release's first Russian track (folder order), else its first voice-over of unknown language (a separate audio file is almost always a translation). Otherwise mpv chooses. Subtitles are left to mpv. mpv drops the language `und`, so "unknown" cannot be expressed through `alang`.
+
+**Fonts.** When a torrent has ASS/SSA tracks and font files, `fonts` asks torrent.ps1 to save them (names `<file id>.<ext>`, never the torrent's). Once they are in, every torrent episode that loads gets `file-local-options/sub-fonts-dir` set to that folder. Checked with mpv 0.41: libass loads the folder's fonts when it is set in `on_preloaded`; set during playback, even with `sub-reload`, it is not loaded, so fonts that arrive late apply from the next episode. `uninstall.bat` removes `%TEMP%\watch-together`, fonts included.
+
+Each player attaches tracks from its own engine; nothing about tracks goes over the room. A guest with its own copy of an episode gets what mpv itself finds next to it.
 
 ## Opening
 
 - **From the menu** (Open torrent from clipboard, host or alone): `open_torrent(text, nil)`. What plays now keeps playing until an episode is picked; then the picked one is loaded with `replace`, and the others are inserted before and appended after it.
 - **Through mpv** (command line, drag and drop, a playlist): an `on_load` hook at priority 9 catches `magnet:?` and existing local `.torrent` paths. It calls `hook:defer()`, inserts the episodes after the link's entry, and after the pick runs `playlist-play-index` and `hook:cont()`. mpv then drops the link's own load, because a new file was requested. The link's entry is in `replaced` and goes at the next `start-file`.
 - mpv takes a magnet for a relative file path: the entry becomes `<cwd>\magnet:?…` with `/` turned into `\` (`udp://x` → `udp:\x`). The hook takes everything from `magnet:?`, turns `\` back into `/`, and restores `scheme:/x` to `scheme://x` (see bugs.md).
-- **Chooser:** `mp.input.select`. The history entry `btih:<hash>` preselects its episode and resumes it (`pending_resume`). `submit`, `closed` (Esc) and `script-message watch-together-pick [k]` (tests) all end in `finish`, which runs once.
+- **A torrent watched before** (history entry `btih:<hash>` naming one of its episodes) opens no chooser: it plays that episode from the remembered time (`pending_resume`) and says "Resuming <episode> at <time>". Another episode is in the playlist. The history is written only with `resume_memory` on.
+- **Chooser** for a new torrent: `mp.input.select`. `submit`, `closed` (Esc: the first episode) and `script-message watch-together-pick [k]` (tests) all end in `finish`, which runs once.
 
 Resume memory for torrents works alone too: `remember()` runs for an engine URL even without a room, and the `on_unload` hook saves the position of every file that is left.
 
@@ -133,9 +162,11 @@ The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7;
 - back to a local file;
 - bad hashes and a magnet with a line break never reach the engine;
 - a guest's torrent log records the room torrent, its episodes and the check;
-- a room torrent the guest's engine could not take is tried again (`fake_torrserver.py` reads its config on every request, so the test adds the torrent after the first try failed).
+- a room torrent the guest's engine could not take is tried again (`fake_torrserver.py` reads its config on every request, so the test adds the torrent after the first try failed);
+- a torrent watched before goes on where it stopped without the chooser;
+- extra tracks: a player with Russian display language gets the episode's voice-over (title from its studio folder, `ru`) and subtitles, hears the voice-over first, the font is fetched, and the next episode gets its own files and the font folder. The stand-in audio files are episodes, so the test counts only audio and subtitle tracks.
 
-Last run: 29/29.
+Last run: 33/33. `tests\tracks.ps1`: 13/13.
 
 ## Log
 
@@ -144,6 +175,7 @@ Last run: 29/29.
 - the engine download and `ready`;
 - every add and its answer (hash, number of files), and engine errors;
 - the picked episode;
+- how many extra tracks and font files a torrent has, the tracks each episode gets, which audio was put first, and when the fonts are in;
 - the room torrent a guest got, whether the .torrent came from the share port, and how many episodes it knows;
 - a room file the guest doesn't have (once per name);
 - every `file-loaded` while torrents are involved;

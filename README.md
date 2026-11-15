@@ -82,13 +82,15 @@ Instead of files on disk, the host can open a magnet link or a .torrent. Nobody 
 
 1. Copy the magnet link, or the path of a .torrent file (Shift + right-click on the file → Copy as path). In mpv, right-click → Watch together → Open torrent from clipboard (Совместный просмотр → Открыть торрент из буфера обмена). Dragging a .torrent onto mpv or starting `mpv "magnet:?…"` works too.
 2. The first time, the plugin downloads its torrent engine, [TorrServer](https://github.com/YouROK/TorrServer) (about 64 MB), from that project's GitHub release, and runs it only if it matches the checksum built into the plugin. Windows may ask whether TorrServer may use the network. Allow it: if you don't, it still works, but fewer peers can connect to you and the download is slower.
-3. mpv lists the torrent's videos. Pick the episode to start from. The one you watched last is preselected, with the time you stopped at, and continues from there. All episodes go into the playlist, but only the one playing is downloaded. Esc starts the preselected one.
+3. mpv lists the torrent's videos. Pick the episode to start from (Esc starts the first). All episodes go into the playlist, but only the one playing is downloaded. A torrent you watched before asks nothing: it goes on with the episode and the time you stopped at ("Resuming …"), and any other episode is in the playlist.
 4. The episode opens paused, and the swarm check (Проверка раздачи) runs in the top right corner for 20 seconds. Each player shows how fast the torrent downloads compared with what the video needs:
    - ✓ fast enough, with a margin;
    - ⚠ just about enough, short pauses are likely;
    - ✗ too slow, expect frequent pauses.
 
    Press Space whenever you are ready; that ends the check. Watch together → Check the torrent (Проверить раздачу) runs it again.
+
+Voice-overs and subtitles that come as separate files in the torrent (a "Rus Sound/Studio" folder, "Subs", "Show.S01E02.rus.srt" next to the video, and so on) join each episode's audio and subtitle tracks, named after their folder or studio. The plugin works out which file goes with which episode from the names alone, whatever the release's layout; a file it cannot place for sure is left out rather than put on the wrong episode. With Windows in Russian and no `alang` in mpv.conf, a Russian voice-over plays first: a track marked Russian, a known Russian studio (LostFilm, AniLibria, Кубик в Кубе and many more), a folder name in Cyrillic, or else the release's first separate voice-over. Fonts for ASS subtitles are fetched too and used by every episode that starts after they arrive. Everyone in a room picks their own voice-over and subtitles.
 
 If a guest's check line stays at "not on this episode yet", the guest's player has no list of the torrent's files yet. Torrent mode keeps a log in `%APPDATA%\mpv\watch_together_torrent.log`; send it along when something goes wrong.
 
@@ -179,6 +181,7 @@ powershell -ExecutionPolicy Bypass -File tests\features.ps1 -Mpv C:\path\to\mpv.
 powershell -ExecutionPolicy Bypass -File tests\stream.ps1 -Mpv C:\path\to\mpv.exe
 powershell -ExecutionPolicy Bypass -File tests\torrent.ps1 -Mpv C:\path\to\mpv.exe     # needs python, no network
 powershell -ExecutionPolicy Bypass -File tests\engine.ps1 -Mpv C:\path\to\mpv.exe      # the engine helper with a stand-in TorrServer, no network
+powershell -ExecutionPolicy Bypass -File tests\tracks.ps1 -Mpv C:\path\to\mpv.exe      # which torrent file goes with which episode, on real layouts
 ```
 
 To measure a real tunnel, run `tests\speed.ps1 -Name "<file name>"` on a guest's PC while the host has a room open with that file in its playlist. It reports the download speed from the host with 1, 2, 4 and 8 connections.

@@ -6,8 +6,10 @@
 #   add <id> <link>   link: magnet, bare hash or file:///path.torrent; answered with files or error
 #   probe <hash>      report the torrent's download speed every second; probe-stop ends it
 #   preload <hash> <index>   fetch the start of that file ahead (the next episode); answered with preloaded
+#   fonts <hash> <i:ext:length;...>   save those font files to %TEMP%\watch-together\fonts\<hash> as <i>.<ext>
+#                     (one at a time; ones already there are kept); answered with fonts
 # Reports to main.lua: engine <bytes> <total> (downloading the engine) | ready <base url> | restarted |
-#   preloaded <hash> <index> | preload-failed <hash> <index> <text> |
+#   preloaded <hash> <index> | preload-failed <hash> <index> <text> | fonts <hash> <failed count> |
 #   files <id> <hash> <json> | stat <hash> <bytes per second> <active peers> <seeders> | error <id> <text>.
 # ASCII only, like bridge.ps1.
 param(
@@ -221,6 +223,7 @@ Send-Lua @('ready', $Base)
 $adding = New-Object System.Collections.ArrayList   # @{ id; hash; until }: added, waiting for the file list
 $probe = ''      # hash whose speed is reported
 $preload = $null # @{ req; task; hash; index }: the next episode being fetched ahead
+$fontJobs = New-Object System.Collections.ArrayList   # @{ hash; dir; queue; failed; wc; task; file }
 $mpvTask = $mpvIn.ReadLineAsync()
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $down = $false   # our engine stopped answering and could not be started again yet
@@ -257,11 +260,58 @@ function On-Command($a) {
             if ($auth) { $req.Headers['Authorization'] = $auth }
             $script:preload = @{ req = $req; task = $req.GetResponseAsync(); hash = $h; index = $i }
         }
+    } elseif ($verb -eq 'fonts') {
+        # Names are ours (<file id>.<ext>), never the torrent's.
+        $h = ([string]$a[2]).ToLower()
+        if ($h -match '^[0-9a-f]{40}$') {
+            $q = New-Object System.Collections.ArrayList
+            foreach ($s in ([string]$a[3]).Split(';')) {
+                if ($s -match '^(\d{1,6}):(ttf|otf|ttc):(\d{1,12})$') {
+                    [void]$q.Add(@{ i = [int]$matches[1]; ext = $matches[2]; len = [int64]$matches[3] })
+                }
+            }
+            $dir = Join-Path $env:TEMP "watch-together\fonts\$h"
+            [void]$fontJobs.Add(@{ hash = $h; dir = $dir; queue = $q; failed = 0; task = $null })
+        }
     } elseif ($verb -eq 'probe') {
         $script:probe = ([string]$a[2]).ToLower()
     } elseif ($verb -eq 'probe-stop') {
         $script:probe = ''
     }
+}
+
+# Font files for ASS subtitles, one download at a time, through a .part file; the answer comes once a
+# torrent's list is done. A file of the right size from an earlier run is kept.
+function Step-Fonts {
+    $j = $fontJobs[0]
+    if ($j.task) {
+        if (-not $j.task.IsCompleted) { return }
+        $ok = $j.task.Status -eq 'RanToCompletion'
+        $j.wc.Dispose(); $j.task = $null
+        try {
+            if (-not $ok) { throw 'download failed' }
+            if (Test-Path -LiteralPath $j.file) { Remove-Item -LiteralPath $j.file -Force }
+            Move-Item -LiteralPath "$($j.file).part" $j.file
+        } catch {
+            Remove-Item -LiteralPath "$($j.file).part" -Force -ErrorAction SilentlyContinue
+            $j.failed++
+        }
+    }
+    while ($j.queue.Count -gt 0) {
+        $f = $j.queue[0]; $j.queue.RemoveAt(0)
+        $j.file = Join-Path $j.dir "$($f.i).$($f.ext)"
+        $have = Get-Item -LiteralPath $j.file -ErrorAction SilentlyContinue
+        if ($have -and $have.Length -eq $f.len) { continue }
+        try {
+            New-Item -ItemType Directory -Force $j.dir | Out-Null
+            $j.wc = New-Object Net.WebClient
+            if ($auth) { $j.wc.Headers['Authorization'] = $auth }
+            $j.task = $j.wc.DownloadFileTaskAsync("$Base/stream?link=$($j.hash)&index=$($f.i)&play", "$($j.file).part")
+            return
+        } catch { $j.failed++ }
+    }
+    $fontJobs.RemoveAt(0)
+    Send-Lua @('fonts', $j.hash, "$($j.failed)")
 }
 
 $next = 0
@@ -312,6 +362,7 @@ while ($true) {
             Send-Lua @('preload-failed', $pl.hash, "$($pl.index)", (Clean $pl.task.Exception.InnerException.Message))
         }
     }
+    if ($fontJobs.Count -gt 0) { Step-Fonts }
 
     if ($now -lt $next) { continue }
     $next = $now + 1

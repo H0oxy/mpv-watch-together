@@ -110,7 +110,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 LOG.append("preload %s %s" % (q.get("link", [""])[0].lower(), q.get("index", [""])[0]))
             return self.reply(200, b"", "text/plain")
-        if not url.path.startswith("/stream/"):
+        # /stream/<name>?... from mpv, /stream?... from torrent.ps1 (font files); both serve the file.
+        if url.path != "/stream" and not url.path.startswith("/stream/"):
             return self.reply(404, b"", "text/plain")
         h, index = q.get("link", [""])[0].lower(), int(q.get("index", ["0"])[0])
         files = config()["torrents"].get(h)
@@ -135,7 +136,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_response(200)
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Type", "video/x-matroska")
+        # Like TorrServer (http.ServeContent): the type follows the torrent's file name.
+        name = files[index - 1][0].lower()
+        ctype = ("video/x-matroska" if name.endswith((".mkv", ".mka")) else
+                 "text/plain; charset=utf-8" if name.endswith((".ass", ".srt")) else "application/octet-stream")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Connection", "close")
         self.end_headers()

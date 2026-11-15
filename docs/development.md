@@ -10,7 +10,8 @@ watch-together/update.ps1   GitHub release check / install
 watch-together/share.ps1    host: serves playlist files to guests on share_port
 watch-together/fetch.ps1    guest: downloads one file from share.ps1, resumable
 watch-together/stream.ps1   guest: local HTTP server for mpv, fetches pieces from share.ps1 over 4 connections
-watch-together/torrent.ps1  torrent mode: downloads, checks and starts TorrServer, adds torrents, reports speed (docs/torrent.md)
+watch-together/torrent.ps1  torrent mode: downloads, checks and starts TorrServer, adds torrents, reports speed, fetches fonts (docs/torrent.md)
+watch-together/tracks.lua   torrent mode: which subtitle/audio/font files go with which video, by names (docs/torrent.md, Extra tracks)
 tests/e2e.ps1               host + 2 guests over loopback, 25 checks
 tests/scale.ps1             host + N guests, load check (not run by e2e)
 tests/buffering.ps1         waiting for a buffering/loading guest (needs python)
@@ -22,6 +23,7 @@ tests/speed.ps1             manual: download speed from a host's share port with
 tests/torrent.ps1           torrent mode offline: host + 3 guests against fake_torrserver.py (needs python)
 tests/fake_torrserver.py    the TorrServer API calls the plugin makes, over local files
 tests/engine.ps1            torrent.ps1 with its own engine offline: a stand-in TorrServer compiled from C# (password, restart, watchdog)
+tests/tracks.ps1, tracks.lua  tracks.lua on torrent layouts (real ones and made-up hard cases), inside an idle mpv
 install.bat, uninstall.bat
 ```
 
