@@ -105,5 +105,11 @@ Symptom: in tests\torrent.ps1 one of two guests fell back to the bare hash. Caus
 ## The last seconds of a file were not remembered
 Symptom: reopening a torrent offered an episode watched minutes before, not the last one. Cause: `remember()` ran only every 10 s, so a file left within 10 s of a change was never saved. Fix: `remember()` also runs in an `on_unload` hook. Verified: tests\torrent.ps1 "the chooser resumes the torrent where it stopped" failed before and passes after.
 
+## The pinned engine (Silo.2) refused its command line
+Symptom (real use): opening a .torrent downloaded the engine, then showed "Torrent: the torrent engine stopped" and nothing else. Cause: Silo.2, the newest TorrServer release at the time, accepts only `-c <config.yaml>` (`flag provided but not defined: -p`). The flags we used belong to the MatriX line, and the offline tests never start a real engine. The real reason was also hidden: `torrent.ps1` reported it, but the job failure that followed overwrote it with "stopped". Fix: pin MatriX.150, whose source at that tag has `-p`/`-i`/`-d`. The engine's stderr goes to `engine-errors.log`, its first line becomes the error, and Lua keeps the helper's last error for the jobs it fails. Verified: ran the Silo.2 exe by hand with our arguments and got that message; MatriX.150's flags and routes checked in its source at the tag. A live run with MatriX.150 is still to do.
+
+## The engine watchdog could kill an unrelated process
+Risk (found while debugging the above): the watchdog killed the engine's pid when mpv exited. An engine that had already died left that pid free, and Windows may reuse it. Fix: the watchdog stops the pid only if its path is our `TorrServer.exe`. Verified with two `ping.exe` stand-ins: the matching one was killed, the one with another path was left running.
+
 ## A torrent added twice never answered the first time
 Risk (found in review): `torrent.ps1` kept one pending add per hash, so a second add of the same torrent replaced the first, and the first caller (a deferred `on_load` hook) would wait forever. Fix: each add is its own job. Not reproduced.

@@ -4,13 +4,13 @@ The host opens a magnet or a .torrent; every player streams the episode from its
 
 ## Engine
 
-TorrServer (github.com/YouROK/TorrServer, GPL-3.0), one Windows exe. `ENGINE` at the top of `main.lua` pins its release URL and SHA256; the plugin never ships it.
+TorrServer (github.com/YouROK/TorrServer, GPL-3.0), one Windows exe from the MatriX line (MatriX.150). `ENGINE` at the top of `main.lua` pins its release URL and SHA256; the plugin never ships it. A different pinned version replaces the old exe on the next start, because its hash no longer matches.
 
 `torrent.ps1` starts with the first torrent command and keeps running while mpv runs:
 
 1. If `torrent_url` is set, it only checks `/echo` there and starts nothing.
 2. Otherwise, with no engine answering on `http://127.0.0.1:<torrent_port>`, it makes sure that `~~/watch_together_engine/TorrServer.exe` exists and matches the pinned hash. If not, it downloads it to `.part` (reporting `engine <bytes> <total>`), checks the hash, and renames it. A mismatch is an error, and the file is deleted.
-3. It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir>`, waits for `/echo`, and starts a hidden `powershell` that waits for mpv's pid and then kills the engine. mpv kills `torrent.ps1` itself on exit, so it cannot clean up.
+3. It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir>`, with stderr in `engine-errors.log` next to it. If the engine exits before `/echo` answers, the first line of that log becomes the error the user sees. It also starts a hidden `powershell` (`-EncodedCommand`) that waits for mpv's pid and then kills the engine, but only if that pid still belongs to `TorrServer.exe` at our path: an engine that died earlier may have left its pid to another program. mpv kills `torrent.ps1` itself on exit, so it cannot clean up.
 4. It reads `/settings`, then writes them back with `cacheSize = torrent_cache MB`, `useDisk = false`, and Bonjour, DLNA, Rutor and Torznab off. The settings are replaced as a whole, which is why they are read first.
 5. It answers `ready`. Commands sent before that wait in `engine.queue` in Lua.
 
@@ -106,4 +106,4 @@ Guest (`on_room_torrent`):
 
 Last run: 22/22.
 
-Not covered offline: the real engine download and hash check, TorrServer's own behaviour (speed units, idle close, seeking in a real swarm), and the firewall prompt. These need a live run with the network.
+Not covered offline: the real engine download and hash check, TorrServer's own behaviour (speed units, idle close, seeking in a real swarm), and the firewall prompt. These need a live run with the network. The pinned-engine mistake (Silo.2, bugs.md) shows why: the fake engine cannot catch a real engine that refuses its command line.

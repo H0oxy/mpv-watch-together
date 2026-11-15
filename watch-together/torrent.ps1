@@ -88,15 +88,24 @@ function Start-Engine {
     if (-not (Test-Path -LiteralPath $Exe) -or (Get-Sha $Exe) -ne $Sha256.ToLower()) { Get-Engine }
     $port = ([Uri]$Base).Port
     $data = Split-Path $Exe
-    $p = Start-Process -FilePath $Exe -ArgumentList @('-p', "$port", '-i', '127.0.0.1', '-d', "`"$data`"") -WindowStyle Hidden -PassThru
-    # The engine outlives this helper (mpv may stop it) but not mpv itself.
+    $errLog = Join-Path $data 'engine-errors.log'   # what the engine says when it refuses to start
+    $p = Start-Process -FilePath $Exe -ArgumentList @('-p', "$port", '-i', '127.0.0.1', '-d', "`"$data`"") -WindowStyle Hidden -PassThru `
+        -RedirectStandardError $errLog
+    # The engine outlives this helper (mpv may stop it) but not mpv itself. The pid is checked against
+    # the exe first: if the engine is gone by then, Windows may have given its pid to another program.
     if ($WatchPid -gt 0) {
-        $cmd = "try { Wait-Process -Id $WatchPid } catch { }; Stop-Process -Id $($p.Id) -Force -ErrorAction SilentlyContinue"
-        Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', $cmd) -WindowStyle Hidden | Out-Null
+        $exeQ = $Exe -replace "'", "''"
+        $cmd = "try { Wait-Process -Id $WatchPid } catch { }; " +
+               "Get-Process -Id $($p.Id) -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq '$exeQ' } | Stop-Process -Force"
+        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))  # survives spaces and quotes in the path
+        Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc) -WindowStyle Hidden | Out-Null
     }
     for ($i = 0; $i -lt 60; $i++) {
         if (Test-Engine) { return }
-        if ($p.HasExited) { throw "the engine exited with code $($p.ExitCode)" }
+        if ($p.HasExited) {
+            $why = @(Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) | Select-Object -First 1
+            throw "the engine exited: $why"
+        }
         Start-Sleep -Milliseconds 250
     }
     throw 'the engine did not start'

@@ -14,9 +14,10 @@ local PROTOCOL = 2
 
 -- The torrent engine (TorrServer, GPL-3.0) is downloaded on first use of a magnet or .torrent, never
 -- shipped. Only a file with this hash runs; a new engine version comes with a plugin release.
+-- MatriX, not the newer Silo line: Silo takes only a YAML config (-c) and has no -p/-i/-d (see bugs.md).
 local ENGINE = {
-    url = "https://github.com/YouROK/TorrServer/releases/download/Silo.2/TorrServer-windows-amd64.exe",
-    sha256 = "2b5d87a07c3fc8cbe1e70d98034861aedab0fbfe4e519a777ee2f28a26439a2f",
+    url = "https://github.com/YouROK/TorrServer/releases/download/MatriX.150/TorrServer-windows-amd64.exe",
+    sha256 = "3a96b97a24d86a90c0712a6ec47d4ed52edc7eabac1bce6a0d9bbc8fd30de5bb",
 }
 
 local o = {
@@ -1788,11 +1789,12 @@ local function start_engine()
     h = mp.command_native_async({ name = "subprocess", args = args, playback_only = false, capture_stderr = true },
         function(_, res)
             if not engine or engine.handle ~= h then return end
+            local why = engine.last_error or T("engine_died")  -- the reason it gave before exiting, if any
             engine = nil
             mp.msg.warn("torrent.ps1 exited: " .. utils.format_json(res))
             local jobs = engine_jobs
             engine_jobs = {}
-            for _, job in pairs(jobs) do job.fail(T("engine_died")) end
+            for _, job in pairs(jobs) do job.fail(why) end
         end)
     engine = { handle = h, ready = false, queue = {} }
 end
@@ -1975,7 +1977,11 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c)
     elseif kind == "error" then
         local job = a and engine_jobs[a]
         engine_jobs[a or ""] = nil
-        if job then job.fail(tostring(b)) else osd(T("torrent_failed", tostring(b))) end
+        if job then job.fail(tostring(b))
+        else
+            engine.last_error = tostring(b)  -- the helper exits next; its callers get this, not "stopped"
+            osd(T("torrent_failed", tostring(b)))
+        end
     end
 end)
 
