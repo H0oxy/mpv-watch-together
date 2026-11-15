@@ -41,7 +41,7 @@ local o = {
     stream_cache = 1536,    -- MB of mpv's buffer for a stream (torrent or host), 3/4 ahead, 1/4 behind; 0 = mpv's own.
                             -- The menu choice (Settings) overrides it.
     ram_guard = true,       -- shrink that buffer while free RAM runs low
-    torrent_port = 47802,   -- local port of the torrent engine; it listens on 127.0.0.1 only
+    torrent_port = 0,       -- local port of the torrent engine (127.0.0.1 only); 0 = a free one at each start
     torrent_cache = 256,    -- MB of RAM the torrent engine keeps; nothing is written to disk
     torrent_url = "",       -- a TorrServer that already runs, e.g. http://127.0.0.1:8090; empty = the plugin's own
     torrent_check = 20,     -- seconds of swarm-speed check when an episode is picked from a torrent; 0 = off
@@ -444,7 +444,8 @@ local remember, start_share, stop_share, send_files, cancel_downloads, offer_res
 local add_streams, stop_stream
 
 -- torrents: every player streams from its own engine, the host only tells guests which torrent
-local ENGINE_BASE = o.torrent_url ~= "" and (o.torrent_url:gsub("/+$", "")) or ("http://127.0.0.1:" .. o.torrent_port)
+-- Our engine's address comes from torrent.ps1 once it runs (a free port by default); torrent_url is the user's.
+local engine_base = o.torrent_url ~= "" and (o.torrent_url:gsub("/+$", "")) or nil
 local torrents = {}         -- hash -> {hash, magnet, tfile, files = {{i, name, path, length}}}
 local room_torrent          -- guest: {hash} the host's room watches
 local sent_torrent          -- host: hash last told to the guests ("" = none)
@@ -525,13 +526,18 @@ end
 local function pct(s) return (s:gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end)) end
 
 local function engine_url(hash, f)
-    return ENGINE_BASE .. "/stream/" .. pct(f.name) .. "?link=" .. hash .. "&index=" .. f.i .. "&play"
+    return engine_base .. "/stream/" .. pct(f.name) .. "?link=" .. hash .. "&index=" .. f.i .. "&play"
 end
 
--- Hash and file index of a torrent stream from our engine, else nil.
+-- Hash and file index of a torrent stream from our engine, else nil. Any local port counts: an entry made
+-- before our engine moved to another port is still a torrent stream.
 local function engine_hash(path)
-    local prefix = ENGINE_BASE .. "/stream/"
-    if type(path) ~= "string" or path:sub(1, #prefix) ~= prefix then return nil end
+    if type(path) ~= "string" then return nil end
+    if o.torrent_url ~= "" then
+        if path:sub(1, #engine_base + 8) ~= engine_base .. "/stream/" then return nil end
+    elseif not path:match("^http://127%.0%.0%.1:%d+/stream/") then
+        return nil
+    end
     local hash = path:match("[?&]link=(%x+)")
     return hash and #hash == 40 and hash:lower() or nil, tonumber(path:match("[?&]index=(%d+)"))
 end
@@ -1941,12 +1947,12 @@ local function engine_exe()
 end
 
 local function start_engine()
-    local args = ps_args("torrent.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(), "-Base", ENGINE_BASE,
+    local args = ps_args("torrent.ps1", "-Pipe", ipc_pipe_name(), "-Script", mp.get_script_name(),
                          "-CacheMB", tostring(o.torrent_cache), "-WatchPid", tostring(mp.get_property_number("pid") or 0))
-    if o.torrent_url == "" then
-        for _, a in ipairs({ "-Exe", engine_exe(), "-Download", ENGINE.url, "-Sha256", ENGINE.sha256 }) do args[#args + 1] = a end
-    end
-    tlog("engine: starting the helper for %s (%s)", ENGINE_BASE, o.torrent_url ~= "" and "torrent_url" or engine_exe())
+    local more = o.torrent_url ~= "" and { "-Base", engine_base }
+                 or { "-Exe", engine_exe(), "-Download", ENGINE.url, "-Sha256", ENGINE.sha256, "-Port", tostring(o.torrent_port) }
+    for _, a in ipairs(more) do args[#args + 1] = a end
+    tlog("engine: starting the helper (%s)", o.torrent_url ~= "" and engine_base or engine_exe())
     local h
     h = mp.command_native_async({ name = "subprocess", args = args, playback_only = false, capture_stderr = true },
         function(_, res)
@@ -2125,10 +2131,18 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
         end
         if total > 0 then mp.osd_message(T("engine_progress", math.floor(done * 100 / total), mb(done), mb(total)), 2) end
     elseif kind == "ready" then
-        tlog("engine: ready")
+        -- Our engine on 127.0.0.1 at the port torrent.ps1 chose; a torrent_url engine keeps its address.
+        if o.torrent_url == "" then
+            if type(a) ~= "string" or not a:match("^http://127%.0%.0%.1:%d+$") then return end
+            engine_base = a
+        end
+        tlog("engine: ready at %s", engine_base)
+        if engine.ready then return end  -- moved after a restart: only the address changes
         engine.ready = true
         for _, args in ipairs(engine.queue) do mp.commandv(unpack(args)) end
         engine.queue = {}
+    elseif kind == "restarted" then
+        tlog("engine: it had stopped and runs again")
     elseif kind == "files" then
         local job = engine_jobs[a]
         engine_jobs[a] = nil
@@ -2243,9 +2257,14 @@ mp.register_script_message("watch-together-tfile", function(kind, name, a)
     end
 end)
 
+local last_room_torrent     -- guest: the host's last torrent message, for a retry
+
 -- Guest: the host watches this torrent (or none). Peer data reaches the engine only as a link inside
--- JSON, never as an mpv command, and the engine's hash must be the one the host announced.
+-- JSON, never as an mpv command, and the engine's hash must be the one the host announced. If it fails (no
+-- file list from the swarm in time, a network or proxy problem), it is tried again every 30 s while the host
+-- still watches it: the host only sends it on hello and on a change.
 function on_room_torrent(m)
+    last_room_torrent = m
     local hash = type(m.hash) == "string" and m.hash:lower() or nil
     if hash and not (#hash == 40 and hash:match("^%x+$")) then return end
     if room_torrent and room_torrent.hash == hash then return end
@@ -2256,13 +2275,23 @@ function on_room_torrent(m)
     local magnet = type(m.magnet) == "string" and #m.magnet <= 8192 and m.magnet:match("^magnet:%?[^%s%c]*$")
                    or ("magnet:?xt=urn:btih:" .. hash)
     osd(T("torrent_room"))
+    local function failed(err)
+        osd(T("torrent_failed", err))
+        room_torrent = nil
+        mp.add_timeout(30, function()
+            if role == "join" and not room_torrent and last_room_torrent == m then
+                tlog("room torrent: trying again")
+                on_room_torrent(m)
+            end
+        end)
+    end
     local function add(link, fallback, tmp)
         add_torrent(link, function(h, list)
             if tmp then os.remove(tmp) end
             if not room_torrent or room_torrent.hash ~= hash then return end
             if h ~= hash then
                 tlog("room torrent: the engine has %s, not %s", h, hash)
-                if fallback then add(fallback) else osd(T("torrent_failed", "wrong torrent")) end
+                if fallback then add(fallback) else failed("wrong torrent") end
                 return
             end
             local t = torrents[h] or { hash = h }
@@ -2276,7 +2305,7 @@ function on_room_torrent(m)
             if tmp then os.remove(tmp) end
             tlog("room torrent: adding failed: %s", tostring(err))
             if not room_torrent or room_torrent.hash ~= hash then return end
-            if fallback then add(fallback) else osd(T("torrent_failed", err)) end
+            if fallback then add(fallback) else failed(err) end
         end)
     end
     if m.tfile == true and host_files and joined_address then

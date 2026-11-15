@@ -1,19 +1,23 @@
 # Torrent engine helper for watch-together: makes sure TorrServer is there (downloads the release pinned in
-# main.lua and checks its SHA256), starts it on 127.0.0.1, and does the HTTP calls main.lua cannot make.
+# main.lua and checks its SHA256), runs it on 127.0.0.1, and does the HTTP calls main.lua cannot make.
+# The engine's API answers any web page (TorrServer allows all origins), so it runs with its HTTP password on
+# a random port; both live in engine.json next to it, so other mpv windows use the same engine.
 # Commands from main.lua, as script-message watch-together-torrent-cmd <verb> ...:
 #   add <id> <link>   link: magnet, bare hash or file:///path.torrent; answered with files or error
 #   probe <hash>      report the torrent's download speed every second; probe-stop ends it
-# Reports to main.lua: engine <bytes> <total> (downloading the engine) | ready | files <id> <hash> <json> |
-#   stat <hash> <bytes per second> <active peers> <seeders> | error <id> <text>. ASCII only, like bridge.ps1.
+# Reports to main.lua: engine <bytes> <total> (downloading the engine) | ready <base url> | restarted |
+#   files <id> <hash> <json> | stat <hash> <bytes per second> <active peers> <seeders> | error <id> <text>.
+# ASCII only, like bridge.ps1.
 param(
     [Parameter(Mandatory)][string]$Pipe,
     [Parameter(Mandatory)][string]$Script,
-    [Parameter(Mandatory)][string]$Base,   # http://127.0.0.1:<port> of the engine
-    [string]$Exe = '',                     # empty: use the engine that already runs at Base, start nothing
-    [string]$Download = '',                # where to get the engine when Exe is missing or wrong
+    [string]$Base = '',                    # an engine the user runs (torrent_url): use it, start nothing
+    [string]$Exe = '',                     # our engine, when Base is empty
+    [string]$Download = '',                # where to get it when Exe is missing or wrong
     [string]$Sha256 = '',
+    [int]$Port = 0,                        # our engine's port; 0 = a free one, chosen at its start
     [int]$CacheMB = 256,
-    [int]$WatchPid = 0                     # mpv: the engine started here goes away when mpv does
+    [int]$WatchPid = 0                     # mpv: the engine goes away once no mpv of this name runs
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -40,23 +44,38 @@ function Send-Ram {
     } catch { }
 }
 
-function Invoke-Engine([string]$path, $body) {
-    $uri = $Base + $path
-    if ($null -eq $body) { return Invoke-RestMethod -UseBasicParsing -TimeoutSec 10 -Uri $uri }
+$own = -not $Base                          # we start and keep our engine
+$data = if ($own) { Split-Path $Exe } else { '' }
+$stateFile = if ($own) { Join-Path $data 'engine.json' } else { '' }
+$auth = $null                              # Authorization header of our engine
+
+function Invoke-Engine([string]$path, $body, [switch]$NoAuth) {
+    $headers = @{}
+    if ($auth -and -not $NoAuth) { $headers['Authorization'] = $auth }
     $json = $utf8.GetBytes((ConvertTo-Json -Compress -Depth 10 -InputObject $body))
-    Invoke-RestMethod -UseBasicParsing -TimeoutSec 10 -Method Post -Uri $uri -Body $json -ContentType 'application/json; charset=utf-8'
+    Invoke-RestMethod -UseBasicParsing -TimeoutSec 10 -Method Post -Uri ($Base + $path) -Headers $headers -Body $json `
+        -ContentType 'application/json; charset=utf-8'
 }
 
-function Test-Engine {
-    try { [void](Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "$Base/echo"); $true } catch { $false }
+function Test-Engine([string]$url) {
+    try { [void](Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "$url/echo"); $true } catch { $false }
+}
+
+# Ours and locked: the API refuses a request without the password and takes one with it. TorrServer runs
+# without a password when it cannot read accs.db, so this is checked, not assumed.
+function Test-Locked {
+    try { [void](Invoke-Engine '/settings' @{ action = 'get' } -NoAuth); return $false } catch {
+        $r = $_.Exception.Response
+        if (-not $r -or [int]$r.StatusCode -ne 401) { return $false }
+    }
+    try { [void](Invoke-Engine '/settings' @{ action = 'get' }); $true } catch { $false }
 }
 
 function Get-Sha([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower() }
 
 # Download to .part with progress reports; only a file with the pinned hash becomes the engine.
 function Get-Engine {
-    $dir = Split-Path $Exe
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    New-Item -ItemType Directory -Force -Path $data | Out-Null
     $part = "$Exe.part"
     $req = [Net.HttpWebRequest]::Create($Download)
     $req.UserAgent = 'watch-together'
@@ -93,25 +112,69 @@ function Set-EngineSettings {
     [void](Invoke-Engine '/settings' @{ action = 'set'; sets = $s })
 }
 
-function Start-Engine {
+function Test-PortFree([int]$p) {
+    try { $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $p); $l.Start(); $l.Stop(); $true } catch { $false }
+}
+
+function Get-FreePort {
+    $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+    $l.Start(); $p = $l.LocalEndpoint.Port; $l.Stop()
+    $p
+}
+
+function Use-State($st) {
+    $script:Base = "http://127.0.0.1:$($st.port)"
+    $script:auth = 'Basic ' + [Convert]::ToBase64String($utf8.GetBytes("wt:$($st.pass)"))
+}
+
+# The engine of engine.json if it answers and is locked; else a new one on that port (or Port, or a free
+# one) with that password (or a new one). Another mpv window may have started it. -Restart (the engine
+# stopped answering): if something still holds its port, that is the engine, slow, so no second one starts.
+function Connect-Engine([switch]$Restart) {
+    $st = $null
+    if (Test-Path -LiteralPath $stateFile) { try { $st = Get-Content -Raw -LiteralPath $stateFile | ConvertFrom-Json } catch { } }
+    if ($st -and $st.port -and $st.pass) {
+        Use-State $st
+        if ((Test-Engine $Base) -and (Test-Locked)) { return }
+        if ($Restart -and -not (Test-PortFree ([int]$st.port))) { throw 'the engine does not answer' }
+    }
     if (-not (Test-Path -LiteralPath $Exe) -or (Get-Sha $Exe) -ne $Sha256.ToLower()) { Get-Engine }
-    $port = ([Uri]$Base).Port
-    $data = Split-Path $Exe
+    $pass = if ($st -and $st.pass) { [string]$st.pass } else {
+        $b = New-Object byte[] 16
+        (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b)
+        -join ($b | ForEach-Object { $_.ToString('x2') })
+    }
+    $p = if ($Port -gt 0) { $Port } elseif ($st -and $st.port -and (Test-PortFree ([int]$st.port))) { [int]$st.port } else { Get-FreePort }
+    $st = [pscustomobject]@{ port = $p; pass = $pass }
+    [IO.File]::WriteAllText((Join-Path $data 'accs.db'), (ConvertTo-Json -Compress @{ wt = $pass }))
+    [IO.File]::WriteAllText($stateFile, (ConvertTo-Json -Compress $st))
+    Use-State $st
     $errLog = Join-Path $data 'engine-errors.log'   # what the engine says when it refuses to start
-    $p = Start-Process -FilePath $Exe -ArgumentList @('-p', "$port", '-i', '127.0.0.1', '-d', "`"$data`"") -WindowStyle Hidden -PassThru `
+    $proc = Start-Process -FilePath $Exe -ArgumentList @('-p', "$p", '-i', '127.0.0.1', '-d', "`"$data`"", '-a') -WindowStyle Hidden -PassThru `
         -RedirectStandardError $errLog
-    # The engine outlives this helper (mpv may stop it) but not mpv itself. The pid is checked against
-    # the exe first: if the engine is gone by then, Windows may have given its pid to another program.
+    # The engine outlives this helper (mpv may stop it) and the mpv that started it (another window may use
+    # it), but not the last mpv. The pid is checked against the exe: if the engine is gone by then, Windows
+    # may have given its pid to another program.
     if ($WatchPid -gt 0) {
-        $exeQ = $Exe -replace "'", "''"
-        $cmd = "try { Wait-Process -Id $WatchPid } catch { }; " +
-               "Get-Process -Id $($p.Id) -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq '$exeQ' } | Stop-Process -Force"
-        $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))  # survives spaces and quotes in the path
-        Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc) -WindowStyle Hidden | Out-Null
+        $name = (Get-Process -Id $WatchPid -ErrorAction SilentlyContinue).ProcessName
+        if ($name) {
+            $exeQ = $Exe -replace "'", "''"
+            $cmd = "while (Get-Process -Name '$name' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 10 }; " +
+                   "Get-Process -Id $($proc.Id) -ErrorAction SilentlyContinue | Where-Object { `$_.Path -eq '$exeQ' } | Stop-Process -Force"
+            $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))  # survives spaces and quotes in the path
+            Start-Process -FilePath 'powershell' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $enc) -WindowStyle Hidden | Out-Null
+        }
     }
     for ($i = 0; $i -lt 60; $i++) {
-        if (Test-Engine) { return }
-        if ($p.HasExited) {
+        if (Test-Engine $Base) {
+            if (-not (Test-Locked)) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                throw 'the engine started without its password, so it is not used'
+            }
+            Set-EngineSettings
+            return
+        }
+        if ($proc.HasExited) {
             $why = @(Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) | Select-Object -First 1
             throw "the engine exited: $why"
         }
@@ -121,21 +184,20 @@ function Start-Engine {
 }
 
 try {
-    if (-not (Test-Engine)) {
-        if (-not $Exe) { throw "no torrent engine at $Base" }
-        Start-Engine
-    }
-    if ($Exe) { Set-EngineSettings }
+    if ($own) { Connect-Engine }
+    elseif (-not (Test-Engine $Base)) { throw "no torrent engine at $Base" }
 } catch {
     Send-Lua @('error', '', (Clean $_.Exception.Message))
     exit 1
 }
-Send-Lua @('ready')
+Send-Lua @('ready', $Base)
 
 $adding = New-Object System.Collections.ArrayList   # @{ id; hash; until }: added, waiting for the file list
 $probe = ''      # hash whose speed is reported
 $mpvTask = $mpvIn.ReadLineAsync()
 $clock = [Diagnostics.Stopwatch]::StartNew()
+$down = $false   # our engine stopped answering and could not be started again yet
+$misses = 0      # health checks in a row that got no answer
 
 function File-List($st) {
     $list = @()
@@ -151,7 +213,8 @@ function On-Command($a) {
         $id = [string]$a[2]
         try {
             # Kept in the engine's list: it closes an idle torrent after a minute, and a stream asked for later
-            # (a guest reaching an episode it lacks) brings it back from that list with its trackers.
+            # (a guest reaching an episode it lacks, or after an engine restart) brings it back from that list
+            # with its trackers.
             $st = Invoke-Engine '/torrents' @{ action = 'add'; link = [string]$a[3]; save_to_db = $true }
             $hash = ([string]$st.hash).ToLower()
             if ($hash -notmatch '^[0-9a-f]{40}$') { throw 'the engine did not take this link' }
@@ -179,7 +242,30 @@ while ($true) {
     }
 
     $now = $clock.Elapsed.TotalSeconds
-    if ($now -ge $nextRam) { $nextRam = $now + 5; Send-Ram }
+    if ($now -ge $nextRam) {
+        $nextRam = $now + 5
+        Send-Ram
+        # Our engine died (a crash, or the last mpv closing raced us): start it again, on the same port with
+        # the same password if they are still free, so the playlist's stream URLs keep working.
+        # Two misses in a row (10 s), so a slow answer under load is not taken for a dead engine.
+        if ($own -and (Test-Engine $Base)) {
+            $down = $false; $misses = 0   # back, perhaps started by the helper of another mpv window
+        } elseif ($own) {
+            $misses++
+            if ($misses -ge 2) {
+                try {
+                    $was = $Base
+                    Connect-Engine -Restart
+                    $down = $false; $misses = 0
+                    Send-Lua @('restarted')
+                    if ($Base -ne $was) { Send-Lua @('ready', $Base) }
+                } catch {
+                    if (-not $down) { Send-Lua @('error', '', (Clean $_.Exception.Message)) }
+                    $down = $true
+                }
+            }
+        }
+    }
     if ($now -lt $next) { continue }
     $next = $now + 1
 

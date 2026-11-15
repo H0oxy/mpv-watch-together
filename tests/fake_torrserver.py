@@ -15,8 +15,15 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1])
-with open(sys.argv[2], encoding="utf-8") as f:
-    CONFIG = json.load(f)
+CONFIG_FILE = sys.argv[2]
+
+
+def config():
+    """Read again on every call: a test can add a torrent while the plugin keeps asking."""
+    with open(CONFIG_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+
 ADDED = {}      # hash -> True once added
 LOG = []
 LOCK = threading.Lock()
@@ -24,14 +31,14 @@ LOCK = threading.Lock()
 
 def speed():
     try:
-        with open(CONFIG.get("speed_file", ""), encoding="utf-8") as f:
+        with open(config().get("speed_file", ""), encoding="utf-8") as f:
             return int(f.read().strip() or 0)
     except (OSError, ValueError):
         return 0
 
 
 def status(h, with_files=True):
-    files = CONFIG["torrents"][h]
+    files = config()["torrents"][h]
     st = {"hash": h, "download_speed": speed(), "active_peers": 7, "connected_seeders": 3}
     if with_files:
         st["file_stats"] = [{"id": i + 1, "path": p, "length": os.path.getsize(local)}
@@ -80,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     LOG.append(link)
                 h = hash_of(link)
-                if h not in CONFIG["torrents"]:
+                if h not in config()["torrents"]:
                     return self.reply(500, {"error": "unknown torrent"})
                 ADDED[h] = True
                 return self.reply(200, status(h, with_files=False))  # like the real one: no metadata yet
@@ -102,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, b"", "text/plain")
         q = urllib.parse.parse_qs(url.query)
         h, index = q.get("link", [""])[0].lower(), int(q.get("index", ["0"])[0])
-        files = CONFIG["torrents"].get(h)
+        files = config()["torrents"].get(h)
         if not files or not ADDED.get(h) or not 1 <= index <= len(files):
             return self.reply(404, b"", "text/plain")
         local = files[index - 1][1]

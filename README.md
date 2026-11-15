@@ -96,6 +96,8 @@ In a room, the guests get the same torrent from the host and each downloads it o
 
 A jump to a part that hasn't been downloaded yet makes the engine fetch that part first, so the room waits a few seconds ("Waiting for: Alex (buffering)"). How long depends on the swarm. A torrent needs more download speed than the video's bitrate on every PC; the check shows whether there is enough.
 
+The engine listens only on 127.0.0.1, on a random port, and its controls need a password the plugin makes up and keeps in `%APPDATA%\mpv\watch_together_engine\engine.json`, so a web page open in your browser can't add torrents to it. It keeps running while any mpv window is open, so several windows share it, and if it crashes, the plugin starts it again within about 10 seconds. If a guest's player can't load the room's torrent (no file list from the swarm in time, a proxy in the way), it tries again every 30 seconds.
+
 Memory: up to 256 MB in the engine (`torrent_cache`) plus the online buffer (1.5 GB by default, see above). The engine downloads only 16 MB past what mpv has read, so the online buffer decides how far ahead a torrent is downloaded: a bigger one rides out longer slow spells of the swarm. Nothing of the video is written to disk. The engine itself lives in `%APPDATA%\mpv\watch_together_engine`, and `uninstall.bat` removes it.
 
 ## How sync works
@@ -143,7 +145,7 @@ share_port=47801    # port for those downloads
 download_dir=       # a fixed folder for downloads; empty = the menu choice (open video's folder or Downloads)
 stream_cache=1536   # MB of the online buffer (host or torrent episodes): 3/4 ahead, 1/4 behind; 0 = mpv's default
 ram_guard=yes       # shrink the online buffer while free memory runs low
-torrent_port=47802  # local port of the torrent engine (it listens on 127.0.0.1 only)
+torrent_port=0      # local port of the torrent engine (127.0.0.1 only); 0 = a free one, chosen when it starts
 torrent_cache=256   # MB of RAM the torrent engine keeps
 torrent_url=        # use a TorrServer you already run, e.g. http://127.0.0.1:8090; empty = the plugin's own
 torrent_check=20    # seconds of the swarm check after picking an episode; 0 = off

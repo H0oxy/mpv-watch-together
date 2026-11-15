@@ -202,6 +202,17 @@ try {
     $ok = Wait-Until { (Engine-Count $d) -eq 2 } 10
     $new = @((Added) | Select-Object -Skip $before)
     Check 'a magnet with a line break is replaced by a plain one' ($ok -and $new.Count -eq 1 -and $new[0] -eq "magnet:?xt=urn:btih:$h1") ($new -join ', ')
+
+    # A room torrent the guest's engine cannot take (here unknown to it, as with no file list from the swarm)
+    # is tried again 30 s later; the host sends it only once.
+    $h3 = '3333333333333333333333333333333333333333'
+    Send-Raw @{ t = 'torrent'; hash = $h3 }
+    $dlog = Join-Path $run 'cfg-D\watch_together_torrent.log'
+    $failedOnce = Wait-Until { (Get-Content -Raw -Encoding UTF8 $dlog) -match 'adding failed' } 10
+    $cfg.torrents[$h3] = @(@('Three/E1.mkv', $ep1), @('Three/E2.mkv', $ep2))
+    [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
+    $ok = Wait-Until { @((P $d 'playlist') | Where-Object { $_.filename -like "*$h3*" }).Count -eq 2 } 45
+    Check 'a room torrent that failed is tried again' ($failedOnce -and $ok -and (Get-Content -Raw -Encoding UTF8 $dlog) -match 'trying again') ''
     $peer.Close()
 } finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }

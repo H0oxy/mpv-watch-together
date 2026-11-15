@@ -21,6 +21,7 @@ tests/update.ps1            manual, needs the network: update.ps1 check and inst
 tests/speed.ps1             manual: download speed from a host's share port with 1, 2, 4, 8 connections
 tests/torrent.ps1           torrent mode offline: host + 3 guests against fake_torrserver.py (needs python)
 tests/fake_torrserver.py    the TorrServer API calls the plugin makes, over local files
+tests/engine.ps1            torrent.ps1 with its own engine offline: a stand-in TorrServer compiled from C# (password, restart, watchdog)
 install.bat, uninstall.bat
 ```
 
