@@ -1786,18 +1786,22 @@ function buffer.is_stream(url)
     return type(url) == "string" and (engine_hash(url) ~= nil or (prefix ~= nil and url:sub(1, #prefix) == prefix))
 end
 
--- The chosen size goes 3/4 ahead, 1/4 behind, for the file playing now. When the RAM guard allows less, the
--- part already watched shrinks first (down to 32 MB), and only then the part ahead (down to 96 MB). Also
--- while it plays: mpv drops watched data over a smaller limit at once, while it still reads (not once the
--- whole file is read); data ahead over a smaller limit stays until it has played, mpv only stops reading.
+-- The chosen size goes 3/4 ahead, 1/4 behind, for the file playing now. When the RAM guard allows less, 3/4
+-- of the cut comes off the part already watched and 1/4 off the far end of the part ahead, so a short rewind
+-- still plays from memory. The watched part keeps at least 32 MB (about 15 s of 4K); a cut too big for that
+-- takes the rest from ahead (down to 96 MB). Also while it plays: mpv drops watched data over a smaller
+-- limit at once, while it still reads (not once the whole file is read); data ahead over a smaller limit
+-- stays until it has played, mpv only stops reading.
 function buffer.apply()
     local chosen, b = settings.buffer_mb, buffer.mb()
     if b <= 0 then return end
     local ahead = math.floor(chosen * 3 / 4)
     local back = chosen - ahead
     if b < chosen then
-        back = math.max(32, math.min(back, b - ahead))
-        ahead = math.max(96, math.min(ahead, b - back))
+        local cut = chosen - b
+        local from_back = math.min(math.floor(cut * 3 / 4), math.max(0, back - 32))
+        back = back - from_back
+        ahead = math.max(96, ahead - (cut - from_back))
     end
     mp.set_property("file-local-options/demuxer-max-bytes", ahead .. "MiB")
     mp.set_property("file-local-options/demuxer-max-back-bytes", back .. "MiB")

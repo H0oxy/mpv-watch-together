@@ -101,10 +101,12 @@ try {
     $null = I $a @('script-message', 'watch-together-buffer', '2048')
     $ok = Wait-Until { (P $a 'demuxer-max-bytes') -eq 1536MB -and (P $a 'demuxer-max-back-bytes') -eq 512MB } 3
     Check 'the buffer choice reaches the playing stream' $ok ("ahead={0} behind={1}" -f (P $a 'demuxer-max-bytes'), (P $a 'demuxer-max-back-bytes'))
-    # A little short (about 1.8 GB allowed of 2 GB): only the part already watched shrinks.
+    # A little short (about 1.8 GB allowed of 2 GB): 3/4 of the cut comes off the watched part, 1/4 off the
+    # far end of the part ahead, so some of what was watched stays for a short rewind.
     $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '3000', '8000')
-                       $back = P $a 'demuxer-max-back-bytes'; (P $a 'demuxer-max-bytes') -eq 1536MB -and $back -lt 512MB -and $back -ge 32MB } 5
-    Check 'a little short of RAM: the watched part shrinks first' $ok ("ahead={0} behind={1}" -f (P $a 'demuxer-max-bytes'), (P $a 'demuxer-max-back-bytes'))
+                       $fromBack = 512MB - (P $a 'demuxer-max-back-bytes'); $fromAhead = 1536MB - (P $a 'demuxer-max-bytes')
+                       $fromAhead -gt 0 -and [math]::Abs($fromBack - 3 * $fromAhead) -le 2MB } 5
+    Check 'a little short of RAM: 3/4 of the cut from the watched part, 1/4 from ahead' $ok ("ahead={0} behind={1}" -f ((P $a 'demuxer-max-bytes') / 1MB), ((P $a 'demuxer-max-back-bytes') / 1MB))
     $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '500', '8000'); (P $a 'demuxer-max-bytes') -eq 96MB -and (P $a 'demuxer-max-back-bytes') -eq 32MB } 5
     Check 'low free RAM cuts the buffer' $ok ("ahead={0} behind={1}" -f (P $a 'demuxer-max-bytes'), (P $a 'demuxer-max-back-bytes'))
     $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '30000', '32000'); (P $a 'demuxer-max-bytes') -eq 1536MB } 5
