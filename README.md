@@ -56,11 +56,11 @@ The host decides under Room settings (Настройки комнаты). Everyo
 
 If someone's player stalls, the room waits for them. That happens when a player is buffering (a stream or a slow network drive can't keep up) or still opening the file after an episode change. Everyone's player pauses, and everyone sees whom the room is waiting for and why, for example "Waiting for: Alex (buffering)" ("Ждём: Alex (буферизация)"); the person it waits for sees "you". Pressing play meanwhile is remembered but not done. Once everyone is ready, playback resumes for all at the same spot. Short stalls under half a second are ignored. After 30 seconds the room gives up on that person and plays on, saying so.
 
-When an episode ends by itself, the next one opens paused for everyone with "Next episode in 10 s" ("Следующая серия через 10 с") on screen, then starts for all at once. Anyone who presses play (Space) during the count stops it; the next play starts the episode.
+When an episode ends by itself, the next one starts for everyone at once; a player still opening it makes the room wait for it as above. The host can turn on a countdown under Settings (Настройки): Wait 10 s before the next episode (Перед следующей серией ждать 10 с). Then the next episode opens paused for everyone with "Next episode in 10 s" ("Следующая серия через 10 с") on screen and starts for all when the count ends. Anyone who presses play (Space) during the count stops it; the next play starts the episode.
 
 When the host opens a room in a folder the group watched before, mpv asks "Continue from S01E05, 12:34?" ("Продолжить с …?"). The episode and time are remembered every 10 seconds while you are in a room.
 
-The host can turn off the countdown, resume memory, episode sharing and waiting for stalled members under Settings (Настройки), When you host (Когда ты хост). The choices are kept between sessions.
+The host can turn on the countdown, and turn off resume memory, episode sharing and waiting for stalled members under Settings (Настройки), When you host (Когда ты хост). The choices are kept between sessions.
 
 The menu lists the members with their files, and Friends' time on screen (Время друзей на экране) adds a live list with everyone's position and how far ahead or behind the host they are.
 
@@ -140,7 +140,7 @@ control=all         # host's default control: all or host
 max_guests=50       # host refuses connections beyond this
 wait_for_others=yes # host pauses the room while someone buffers or loads a file
 wait_timeout=30     # seconds to wait for one person before playing on
-countdown=10        # seconds of "next episode in" countdown
+countdown=0         # seconds of a "next episode in" countdown; 0 = none, the next episode starts at once
 resume_memory=yes   # remember episode and time, offer them when hosting again
 share_files=yes     # let guests download episodes from the host
 share_port=47801    # port for those downloads

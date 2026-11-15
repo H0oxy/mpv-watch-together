@@ -121,7 +121,7 @@ Last run: 8/8. Screenshots checked: the host sees "Ждём: Аня (буфер�
 ### Next-episode countdown
 
 - `end-file` with reason `eof` sets `eof_advance`.
-- On the host's next `file-loaded`, `countdown_pending` is set (when the setting is on and guests are there).
+- On the host's next `file-loaded`, `countdown_pending` is set (when the setting is on and guests are there). The setting is off by default since 1.6 (option `countdown=0`, the user's wish: the next episode at once). Its key in the settings file is `countdown_on`. The earlier key `countdown` had been saved as on by everyone, because every toggle saves all settings, so a new default alone would not have reached anyone.
 - On the first `playback-restart` of that file, the host pauses, sets `countdown_end`, and broadcasts `countdown`. Pausing at `file-loaded` instead would deadlock: after a gapless change mpv first plays out the old audio, which never finishes while paused (see bugs.md).
 - The 1 s timer shows the count and calls `finish_countdown()` at 0, which plays and broadcasts `go` (or leaves it to the buffering hold).
 - A play during the count, from the host or a guest request, calls `stop_countdown(who)`: it pauses again, sets `want_paused`, and broadcasts `wait_req`. The next play is an ordinary unpause.

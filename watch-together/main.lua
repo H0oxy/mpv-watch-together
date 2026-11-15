@@ -33,7 +33,8 @@ local o = {
     max_guests = 50,        -- host: connections beyond this are refused
     wait_for_others = true, -- host: pause the room while someone is buffering or loading a file
     wait_timeout = 30,      -- host: seconds to wait for one member before playing on without them
-    countdown = 10,         -- host: seconds of "next episode in ..." after an episode ends; 0 = off
+    countdown = 0,          -- host: seconds of "next episode in ..." after an episode ends; 0 = off (the next starts
+                            -- at once; the menu can turn a 10 s count on)
     resume_memory = true,   -- remember episode and time per folder, offer them when hosting again
     share_files = true,     -- host: let guests download episodes from the host's playlist
     share_port = 47801,     -- host: port for those downloads (share it in Porthole next to port)
@@ -87,7 +88,7 @@ end
 local SETTINGS_FILE = state_file("watch_together_settings.json")
 local settings = {
     wait_for_others = o.wait_for_others,
-    countdown = o.countdown > 0,
+    countdown_on = o.countdown > 0,  -- a new name: the old "countdown" was saved as on by everyone, now the default is off
     resume_memory = o.resume_memory,
     share_files = o.share_files,
     soft_sync = o.soft_sync,
@@ -811,7 +812,7 @@ local function menu_item()
         { type = "separator" },
         { title = T("when_host"), state = { "disabled" } },
         { title = T("set_wait"), cmd = "script-message watch-together-setting wait_for_others", state = st(false, settings.wait_for_others) },
-        { title = T("set_countdown", COUNTDOWN_SECONDS), cmd = "script-message watch-together-setting countdown", state = st(false, settings.countdown) },
+        { title = T("set_countdown", COUNTDOWN_SECONDS), cmd = "script-message watch-together-setting countdown_on", state = st(false, settings.countdown_on) },
         { title = T("set_resume"), cmd = "script-message watch-together-setting resume_memory", state = st(false, settings.resume_memory) },
         { title = T("set_share", o.share_port), cmd = "script-message watch-together-setting share_files", state = st(false, settings.share_files) },
     } }
@@ -2400,7 +2401,7 @@ end  -- torrents
 
 ------------------------------------------------------------------ settings
 
-local SETTING_LABELS = { wait_for_others = "set_wait", countdown = "set_countdown",
+local SETTING_LABELS = { wait_for_others = "set_wait", countdown_on = "set_countdown",
                          resume_memory = "set_resume", share_files = "set_share", soft_sync = "set_soft",
                          ram_guard = "buffer_guard" }
 
@@ -2408,12 +2409,12 @@ local function toggle_setting(key)
     if type(settings[key]) ~= "boolean" or not SETTING_LABELS[key] then return end
     settings[key] = not settings[key]
     save_settings()
-    local arg = key == "countdown" and COUNTDOWN_SECONDS or o.share_port
+    local arg = key == "countdown_on" and COUNTDOWN_SECONDS or o.share_port
     osd(T(settings[key] and "setting_on" or "setting_off", T(SETTING_LABELS[key], arg)))
     if key == "wait_for_others" then update_hold() end
     if key == "soft_sync" and not settings.soft_sync then end_nudge() end
     if key == "ram_guard" and buffer.is_stream(mp.get_property("path")) then buffer.apply() end
-    if key == "countdown" and not settings.countdown and countdown_end then finish_countdown() end
+    if key == "countdown_on" and not settings.countdown_on and countdown_end then finish_countdown() end
     if key == "share_files" then
         if settings.share_files then start_share() else stop_share() end
         send_files("*")
@@ -2547,7 +2548,7 @@ mp.register_event("file-loaded", function()
         local by = switch_by or my_name
         switch_by = nil
         -- Pausing right here would stall that old-audio play-out, so the count starts at playback-restart.
-        countdown_pending = ended_by_itself and settings.countdown and status == "hosting"
+        countdown_pending = ended_by_itself and settings.countdown_on and status == "hosting"
         -- The torrent first: guests must know the room's torrent before they look for its file.
         if (engine_hash(mp.get_property("path")) or "") ~= sent_torrent then send_torrent("*") end
         if status == "hosting" or status == "listening" then broadcast("file", by) end

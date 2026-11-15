@@ -59,13 +59,13 @@ try {
     [void](Wait-Until { (I $a @('get_property', 'time-pos')) -gt 0 -and (I $b @('get_property', 'time-pos')) -gt 0 } 10)
 
     # Settings: toggled twice, saved to the player's own config folder.
-    $null = I $a @('script-message', 'watch-together-setting', 'countdown')
+    $null = I $a @('script-message', 'watch-together-setting', 'countdown_on')
     Start-Sleep -Milliseconds 300
     $off = Get-Content -Raw (Join-Path $cfgA 'watch_together_settings.json') | ConvertFrom-Json
-    $null = I $a @('script-message', 'watch-together-setting', 'countdown')
+    $null = I $a @('script-message', 'watch-together-setting', 'countdown_on')
     Start-Sleep -Milliseconds 300
     $on = Get-Content -Raw (Join-Path $cfgA 'watch_together_settings.json') | ConvertFrom-Json
-    Check 'settings saved on toggle' ((-not $off.countdown) -and $on.countdown) ("off={0} on={1}" -f $off.countdown, $on.countdown)
+    Check 'settings saved on toggle' ((-not $off.countdown_on) -and $on.countdown_on) ("off={0} on={1}" -f $off.countdown_on, $on.countdown_on)
     # Download folder choice: saved, and back to the default (no download goes to the real Downloads here).
     $null = I $b @('script-message', 'watch-together-download-to', 'downloads')
     Start-Sleep -Milliseconds 300
@@ -221,6 +221,19 @@ try {
     $null = I $b @('set_property', 'pause', $false)
     $ok = Wait-Until { -not (I $a @('get_property', 'pause')) } 4
     Check 'next play starts the episode' $ok ''
+
+    # Without the countdown (the default since 1.6; this test turns it on with countdown=3): the next
+    # episode starts for everyone at once and keeps playing.
+    $null = I $a @('script-message', 'watch-together-setting', 'countdown_on')
+    $null = I $a @('playlist-prev')
+    [void](Wait-Until { (I $b @('get_property', 'filename')) -eq 'watch-together-ep1.mkv' } 8)
+    Start-Sleep 1
+    $null = I $a @('seek', 596, 'absolute')
+    [void](Wait-Until { (I $a @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' -and (I $b @('get_property', 'filename')) -eq 'watch-together-ep2.mkv' } 15)
+    Start-Sleep 2
+    $playing = -not (I $a @('get_property', 'pause')) -and -not (I $b @('get_property', 'pause')) -and (I $a @('get_property', 'time-pos')) -gt 1
+    Check 'countdown off: the next episode starts at once for everyone' $playing ("A {0} at {1:N1}, B {2}" -f (I $a @('get_property', 'pause')), (I $a @('get_property', 'time-pos')), (I $b @('get_property', 'pause')))
+    $null = I $a @('script-message', 'watch-together-setting', 'countdown_on')
 
     # Resume memory: leave on episode 2, go elsewhere, host again and accept the offer.
     $null = I $a @('seek', 120, 'absolute')
