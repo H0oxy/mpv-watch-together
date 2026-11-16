@@ -11,6 +11,7 @@ A host and any number of guests, each with its own copy of the same video (or ea
 - `watch-together/stream.ps1`: guest's local HTTP server for watching from the host without downloading.
 - `watch-together/torrent.ps1`: torrent mode: downloads (pinned SHA256), starts and drives TorrServer.
 - `install.bat` / `uninstall.bat`: copy the plugin to, or remove it from, `%APPDATA%\mpv\scripts\watch-together`.
+- `install-mpv.ps1` / `install-anime4k.ps1`: optional steps asked by `install.bat` (mpv itself when missing; Anime4K shaders v4.0.1, pinned SHA256, plus Ctrl+1/Ctrl+0 in `input.conf`). Not in `watch-together/`, so self-updates never run them; `uninstall.bat` removes the shaders and the marked `input.conf` block.
 
 Tests: `powershell -ExecutionPolicy Bypass -File tests\e2e.ps1 -Mpv C:\programs\mpv\mpv.exe`, `tests\scale.ps1 -GuestCount 20`, `tests\buffering.ps1`, `tests\features.ps1`, `tests\stream.ps1`, `tests\torrent.ps1` (offline, fake engine), `tests\engine.ps1` (offline, stand-in TorrServer), `tests\tracks.ps1` (track matching on torrent layouts), `tests\update.ps1` (network; need `ffmpeg` on PATH the first time; buffering also needs `python`).
 
