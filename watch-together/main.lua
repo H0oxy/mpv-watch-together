@@ -2073,7 +2073,12 @@ local function choose_episode(t, cb)
         root = root or dir
         local names = { files = {}, dirs = {} }
         for _, e in ipairs(entries) do table.insert(e.dir and names.dirs or names.files, e.name) end
-        local files, dirs = tracks.short_names(names.files, 70, true), tracks.short_names(names.dirs, 50)
+        local files, shared = tracks.short_names(names.files, 70, true)
+        local dirs = tracks.short_names(names.dirs, 50)
+        -- The show's name goes after the episode, cut at its end: from the names, else from the torrent's own folder.
+        local title = shared
+        if title == "" and root ~= "" then title = tracks.short_names({ root:match("([^/]+)/$") or "" }, 200)[1] end
+        title = title ~= "" and (" — " .. short(title, 40)) or ""
         local back = #stack > 0
         local items, at, fi, di = {}, {}, 0, 0
         if back then items[1] = T("torrent_back") end
@@ -2085,7 +2090,7 @@ local function choose_episode(t, cb)
                 if focus and focus:sub(1, #e.dir) == e.dir then item = #items end
             else
                 fi = fi + 1
-                items[#items + 1] = files[fi]
+                items[#items + 1] = files[fi] .. title
                 if focus and t.files[e.k].path == focus then item = #items end
             end
             at[#items] = e

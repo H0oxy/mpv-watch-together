@@ -383,7 +383,8 @@ end
 -- end goes, up to a word end ("Show - 01 - Title 1080p" -> "01 - Title"), so quality tags written in any way
 -- vanish when they are the same everywhere. If that leaves a name empty or equal to another, the names are
 -- shown without the shared part, then as they are. A name still longer than max chars loses its middle, so
--- both its start and its end stay in view.
+-- both its start and its end stay in view. The second result is the start the names shared (the title of the
+-- show, when the names carry it), cleaned the same way; "" when there is none.
 -- shortcut: a per-file bracket that is not a number (a CRC) goes; a number in plain text (not brackets) that
 -- is the same everywhere (a year) goes too, fine for episodes, wrong only if all files really share a number.
 local function trim(s)
@@ -410,7 +411,7 @@ local function strip_tags(name)
 end
 
 local function strip_common(list)
-    if #list < 2 then return list end
+    if #list < 2 then return list, "" end
     local p = list[1]
     for k = 2, #list do
         local s, i = list[k], 0
@@ -429,7 +430,7 @@ local function strip_common(list)
     while #q > 0 and is_word(q:sub(1, 1)) do q = q:sub(2) end
     local out = {}
     for k, s in ipairs(rest) do out[k] = trim(s:sub(1, #s - #q)) end
-    return out
+    return out, trim(p)
 end
 
 local function unusable(list)
@@ -447,8 +448,8 @@ function M.short_names(names, max, is_file)
         plain[k] = strip_ext(n, is_file)
         cleaned[k] = strip_tags(plain[k])
     end
-    local out = strip_common(cleaned)
-    if unusable(out) then out = cleaned end
+    local out, title = strip_common(cleaned)
+    if unusable(out) then out, title = cleaned, "" end
     if unusable(out) then out = plain end
     local res = {}
     for k, n in ipairs(out) do
@@ -461,7 +462,7 @@ function M.short_names(names, max, is_file)
             res[k] = table.concat(chars)
         end
     end
-    return res
+    return res, title
 end
 
 return M
