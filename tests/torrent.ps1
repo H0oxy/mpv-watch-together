@@ -24,6 +24,7 @@ $speedFile = Join-Path $run 'speed.txt'; [IO.File]::WriteAllText($speedFile, '50
 # A release with its voice-over and ASS subtitles in folders of their own, and a font for the subtitles.
 # The episodes stand in for audio files: audio-add takes their audio track.
 $h4 = '4444444444444444444444444444444444444444'
+$h6 = '6666666666666666666666666666666666666666'   # seasons in folders
 $ass = Join-Path $run 'sub.ass'
 [IO.File]::WriteAllText($ass, "[Script Info]`nScriptType: v4.00+`n`n[Events]`nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`nDialogue: 0,0:00:01.00,0:00:50.00,Default,,0,0,0,,hello`n")
 $cfg = @{ torrents = @{ $h1 = @(@('Show/S01E01.mkv', $ep1), @('Show/S01E02.mkv', $ep2), @('Show/cover.jpg', $cover));
@@ -31,7 +32,8 @@ $cfg = @{ torrents = @{ $h1 = @(@('Show/S01E01.mkv', $ep1), @('Show/S01E02.mkv',
                         $h4 = @(@('Ext/Show 01.mkv', $ep1), @('Ext/Show 02.mkv', $ep2),
                                 @('Ext/Rus Sound/Anidub/Show 01.mka', $ep2), @('Ext/Rus Sound/Anidub/Show 02.mka', $ep1),
                                 @('Ext/Rus Subs/Show 01.ass', $ass), @('Ext/Rus Subs/Show 02.ass', $ass),
-                                @('Ext/Rus Subs/Fonts/Some Font.ttf', $cover)) };
+                                @('Ext/Rus Subs/Fonts/Some Font.ttf', $cover));
+                        $h6 = @(@('Big/Season 1/E01.mkv', $ep1), @('Big/Season 1/E02.mkv', $ep2), @('Big/Season 2/S2E01.mkv', $ep1)) };
           speed_file = $speedFile }
 $cfgFile = Join-Path $run 'fake.json'; [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
 $magnet = "magnet:?xt=urn:btih:$h1&dn=Show&tr=udp%3A%2F%2Ftracker.example%3A80"
@@ -238,6 +240,21 @@ try {
     try { $null = I $pff @('keypress', 'CLOSE_WIN') } catch { }
     $ok = Wait-Until { $pf.HasExited } 10
     Check 'the close button quits mpv while the episode chooser is open' $ok ''
+
+    # Seasons in folders: the chooser lists the folders; Enter opens one, Back and Esc go back to the folder list
+    # with the folder just left in focus. Season 2 -> Back -> Season 1 -> Esc -> Season 2 -> its episode.
+    # (A flat list would pick E02 at the second key.)
+    $procs += Start-Player 'G' @($ep1)
+    $pg = Open-Ipc 'wt-tor-G'
+    [void](Wait-Until { (P $pg 'time-pos') -gt 0 } 10)
+    $null = I $pg @('loadfile', "magnet:?xt=urn:btih:$h6", 'replace')
+    [void](Wait-Until { (Engine-Count $pg) -eq 3 } 10)
+    foreach ($key in @('DOWN', 'ENTER', 'UP', 'ENTER', 'UP', 'ENTER', 'ESC', 'DOWN', 'ENTER', 'ENTER')) {
+        Start-Sleep -Milliseconds 400
+        $null = I $pg @('keypress', $key)
+    }
+    $ok = Wait-Until { (Title $pg) -eq 'S2E01.mkv' } 10
+    Check 'folders in the chooser: in, Back, Esc, the folder left in focus, pick' $ok (Title $pg)
 
     # A raw host sends bad torrent messages; nothing but a clean magnet may reach D's engine.
     $listener = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $RawPort)

@@ -213,5 +213,33 @@ do
     check("no videos: nothing attached", next(got) == nil)
 end
 
+-- The episode chooser: folders one at a time, names that keep the episode in view.
+do
+    local files = {}
+    for _, p in ipairs({ "Big Show [BD]/Season 1/Big Show - S01E01 - A Very Long Episode Title That Goes On.mkv",
+                         "Big Show [BD]/Season 1/Big Show - S01E02 - Another Long Title.mkv",
+                         "Big Show [BD]/Season 2/Big Show - S02E01.mkv",
+                         "Big Show [BD]/Movie.mkv" }) do
+        files[#files + 1] = { path = p, length = 10 }
+    end
+    local e, dir = tracks.folder(files, "")
+    check("chooser: the single top folder is skipped into", dir == "Big Show [BD]/" and #e == 3, dir)
+    check("chooser: subfolders with counts, then the loose file",
+          e[1].dir == "Big Show [BD]/Season 1/" and e[1].count == 2 and e[1].size == 20 and e[2].name == "Season 2" and e[3].k == 4)
+    local s1 = tracks.folder(files, e[1].dir)
+    check("chooser: a season's files", #s1 == 2 and s1[1].k == 1 and s1[2].k == 2)
+    local n = tracks.short_names({ s1[1].name, s1[2].name }, 20)
+    check("chooser: shared start dropped, long middle cut", n[1] == "S01E01 - A…es On.mkv" and n[2] == "S01E02 - A…Title.mkv",
+          n[1] .. " | " .. n[2])
+    n = tracks.short_names({ "Серия 1.mkv", "Серия 2.mkv" }, 40)
+    check("chooser: Cyrillic names cut on a word end", n[1] == "1.mkv" and n[2] == "2.mkv", n[1])
+    n = tracks.short_names({ "Show 1", "Show 1v2", "x" }, 40)
+    check("chooser: nothing shared, nothing dropped", n[1] == "Show 1" and n[3] == "x", n[1])
+    n = tracks.short_names({ "Ep 1", "Ep 10" }, 40)
+    check("chooser: a name that is the others' start keeps its number", n[1] == "1" and n[2] == "10", n[1] .. "|" .. n[2])
+    n = tracks.short_names({ "Only one long name here" }, 10)
+    check("chooser: a single name is only cut", n[1] == "Only …here", n[1])
+end
+
 print(failures == 0 and "all checks passed" or (failures .. " check(s) failed"))
 mp.commandv("quit", failures == 0 and "0" or "1")

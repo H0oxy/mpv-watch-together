@@ -227,6 +227,7 @@ local STRINGS = {
         bad_torrent_clipboard = "В буфере обмена нет magnet-ссылки или пути к .torrent",
         torrent_opening = "Торрент: получаю список файлов…",
         torrent_choose = "С какой серии начать?",
+        torrent_back = "..  Назад",
         torrent_resuming = "Продолжаю: %s с %s",
         torrent_empty = "В торренте нет файлов",
         torrent_failed = "Торрент: %s",
@@ -355,6 +356,7 @@ local STRINGS = {
         bad_torrent_clipboard = "No magnet link or .torrent path in the clipboard",
         torrent_opening = "Torrent: getting the file list…",
         torrent_choose = "Start from which episode?",
+        torrent_back = "..  Back",
         torrent_resuming = "Resuming %s at %s",
         torrent_empty = "The torrent has no files",
         torrent_failed = "Torrent: %s",
@@ -2041,9 +2043,8 @@ end
 local function choose_episode(t, cb)
     local h = load_history()["btih:" .. t.hash]
     if type(h) ~= "table" or type(h.file) ~= "string" or type(h.pos) ~= "number" then h = nil end
-    local default, items, known = 1, {}, false
+    local default, known = 1, false
     for k, f in ipairs(t.files) do
-        items[k] = short(f.path, 80) .. " — " .. mb(f.length)
         if h and f.name == h.file then default, known = k, true end
     end
     local picked = false
@@ -2061,8 +2062,55 @@ local function choose_episode(t, cb)
     local ok, input = pcall(require, "mp.input")
     if #t.files == 1 or not ok then finish(default) return end
     pending_pick = finish
-    input.select({ prompt = T("torrent_choose"), items = items, default_item = default,
-                   submit = finish, closed = function() finish(default) end })
+    -- One folder at a time (tracks.folder); Back and Esc go up a level, Esc at the top starts the first.
+    -- The next folder opens once the console has closed the current one: closed comes after submit.
+    local stack, root = {}, nil
+    local function show(dir, focus)
+        if picked then return end
+        if pending_pick ~= finish then finish(default) return end
+        local entries
+        entries, dir = tracks.folder(t.files, dir)
+        root = root or dir
+        local names = { files = {}, dirs = {} }
+        for _, e in ipairs(entries) do table.insert(e.dir and names.dirs or names.files, e.name) end
+        local files, dirs = tracks.short_names(names.files, 70), tracks.short_names(names.dirs, 50)
+        local back = #stack > 0
+        local items, at, fi, di = {}, {}, 0, 0
+        if back then items[1] = T("torrent_back") end
+        local item = back and 2 or 1
+        for _, e in ipairs(entries) do
+            if e.dir then
+                di = di + 1
+                items[#items + 1] = dirs[di] .. "/  (" .. e.count .. ") — " .. mb(e.size)
+                if focus and focus:sub(1, #e.dir) == e.dir then item = #items end
+            else
+                fi = fi + 1
+                items[#items + 1] = files[fi] .. " — " .. mb(e.size)
+                if focus and t.files[e.k].path == focus then item = #items end
+            end
+            at[#items] = e
+        end
+        local prompt = T("torrent_choose")
+        if dir ~= root then prompt = prompt .. "  " .. tracks.short_names({ dir:sub(#root + 1, -2) }, 50)[1] end
+        local nav
+        input.select({ prompt = prompt, items = items, default_item = item,
+            submit = function(i)
+                if back and i == 1 then
+                    nav = { dir = table.remove(stack), focus = dir }
+                elseif at[i] and at[i].dir then
+                    stack[#stack + 1] = dir
+                    nav = { dir = at[i].dir }
+                elseif at[i] then
+                    finish(at[i].k)
+                end
+            end,
+            closed = function()
+                if picked then return end
+                if not nav and back and pending_pick == finish then nav = { dir = table.remove(stack), focus = dir } end
+                if nav then mp.add_timeout(0, function() show(nav.dir, nav.focus) end) else finish(default) end
+            end })
+    end
+    show("", t.files[default].path)
 end
 
 -- A magnet or .torrent becomes the torrent's files in the playlist and the chosen episode plays.

@@ -350,4 +350,57 @@ function M.attach(files)
     return extras, fonts
 end
 
+-- The episode chooser shows one folder of the torrent at a time: its subfolders (in the order of their first
+-- file) and its own files. A folder holding nothing but one subfolder is skipped into.
+-- files: the sorted playlist ({path, length}); dir: "" or "a/b/". Entries: {k = index in files, name, size}
+-- or {dir, name, count, size}.
+function M.folder(files, dir)
+    local entries, seen = {}, {}
+    for k, f in ipairs(files) do
+        if f.path:sub(1, #dir) == dir then
+            local rest = f.path:sub(#dir + 1)
+            local sub = rest:match("^([^/]+)/")
+            if sub then
+                local e = seen[sub]
+                if not e then
+                    e = { dir = dir .. sub .. "/", name = sub, count = 0, size = 0 }
+                    seen[sub] = e
+                    entries[#entries + 1] = e
+                end
+                e.count, e.size = e.count + 1, e.size + (f.length or 0)
+            else
+                entries[#entries + 1] = { k = k, name = rest, size = f.length or 0 }
+            end
+        end
+    end
+    if #entries == 1 and entries[1].dir then return M.folder(files, entries[1].dir) end
+    return entries, dir
+end
+
+-- Names as the chooser shows them, whatever their length: the start all of them share is dropped up to where
+-- a word ends ("Show - 01", "Show - 02" -> "01", "02"), and a name still longer than max chars loses its
+-- middle, so both its start and its end (where the episode number is when titles differ) stay in view.
+function M.short_names(names, max)
+    local p = #names > 1 and names[1] or ""
+    for k = 2, #names do
+        local n, i = names[k], 0
+        while i < #p and p:byte(i + 1) == n:byte(i + 1) do i = i + 1 end
+        p = p:sub(1, i)
+    end
+    while #p > 0 and (p:byte(#p) >= 128 or p:sub(-1):match("%w")) do p = p:sub(1, -2) end
+    for _, n in ipairs(names) do if #n <= #p then p = "" end end
+    local out = {}
+    for k, n in ipairs(names) do
+        local chars = {}
+        for ch in n:sub(#p + 1):gmatch("[^\128-\191][\128-\191]*") do chars[#chars + 1] = ch end
+        if #chars > max then
+            local head = math.ceil((max - 1) / 2)
+            out[k] = table.concat(chars, "", 1, head) .. "…" .. table.concat(chars, "", #chars - (max - 1 - head) + 1)
+        else
+            out[k] = table.concat(chars)
+        end
+    end
+    return out
+end
+
 return M

@@ -78,7 +78,9 @@ Each player attaches tracks from its own engine; nothing about tracks goes over 
 - **Through mpv** (command line, drag and drop, a playlist): an `on_load` hook at priority 9 catches `magnet:?` and existing local `.torrent` paths. It calls `hook:defer()`, inserts the episodes after the link's entry, and after the pick runs `playlist-play-index` and `hook:cont()`. mpv then drops the link's own load, because a new file was requested. The link's entry is in `replaced` and goes at the next `start-file`. mpv waits for a deferred hook even when told to quit, so while the hook is held a forced `CLOSE_WIN` binding (the window's close button) closes the chooser, continues the hook and quits.
 - mpv takes a magnet for a relative file path: the entry becomes `<cwd>\magnet:?…` with `/` turned into `\` (`udp://x` → `udp:\x`). The hook takes everything from `magnet:?`, turns `\` back into `/`, and restores `scheme:/x` to `scheme://x` (see bugs.md).
 - **A torrent watched before** (history entry `btih:<hash>` naming one of its episodes) opens no chooser: it plays that episode from the remembered time (`pending_resume`) and says "Resuming <episode> at <time>". Another episode is in the playlist. The history is written only with `resume_memory` on.
-- **Chooser** for a new torrent: `mp.input.select`. `submit`, `closed` (Esc: the first episode) and `script-message watch-together-pick [k]` (tests) all end in `finish`, which runs once.
+- **Chooser** for a new torrent: `mp.input.select`. `submit`, `closed` (Esc at the top: the first episode) and `script-message watch-together-pick [k]` (tests) all end in `finish`, which runs once.
+  - **One folder at a time** (`tracks.folder`): a folder's subfolders, as `Season 1/  (12) — 15000 MB`, and its own files; a folder that holds only one subfolder (the torrent's own wrapper) is skipped into. Inside a folder, the first item is `..  Back`; Esc also goes up a level. Going up puts the folder just left in focus. The next view opens from `closed`, which the console sends after `submit`, deferred by a zero timeout.
+  - **Labels** (`tracks.short_names`): the start all names in the view share is dropped up to a word end (`Show - 01`, `Show - 02` → `01`, `02`), and a name still over 70 chars loses its middle, so the episode number stays in view at either end. No fixed words. `watch-together-pick [k]` still takes the index in the whole playlist.
 
 Resume memory for torrents works alone too: `remember()` runs for an engine URL even without a room, and the `on_unload` hook saves the position of every file that is left.
 
@@ -152,6 +154,7 @@ The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7;
 
 `/log` lists every link that was added. The checks:
 - magnet → episodes → chooser → paused pick;
+- seasons in folders: into a folder, Back, Esc, the folder left in focus, a pick (by keys);
 - the magnet reaches the engine unchanged;
 - the check alone, in a room, with a slow swarm, and for a guest with its own copy;
 - play ends the check;
