@@ -2073,7 +2073,7 @@ local function choose_episode(t, cb)
         root = root or dir
         local names = { files = {}, dirs = {} }
         for _, e in ipairs(entries) do table.insert(e.dir and names.dirs or names.files, e.name) end
-        local files, dirs = tracks.short_names(names.files, 70), tracks.short_names(names.dirs, 50)
+        local files, dirs = tracks.short_names(names.files, 70, true), tracks.short_names(names.dirs, 50)
         local back = #stack > 0
         local items, at, fi, di = {}, {}, 0, 0
         if back then items[1] = T("torrent_back") end
@@ -2081,11 +2081,11 @@ local function choose_episode(t, cb)
         for _, e in ipairs(entries) do
             if e.dir then
                 di = di + 1
-                items[#items + 1] = dirs[di] .. "/  (" .. e.count .. ") — " .. mb(e.size)
+                items[#items + 1] = dirs[di] .. "/  (" .. e.count .. ")"
                 if focus and focus:sub(1, #e.dir) == e.dir then item = #items end
             else
                 fi = fi + 1
-                items[#items + 1] = files[fi] .. " — " .. mb(e.size)
+                items[#items + 1] = files[fi]
                 if focus and t.files[e.k].path == focus then item = #items end
             end
             at[#items] = e

@@ -377,30 +377,91 @@ function M.folder(files, dir)
     return entries, dir
 end
 
--- Names as the chooser shows them, whatever their length: the start all of them share is dropped up to where
--- a word ends ("Show - 01", "Show - 02" -> "01", "02"), and a name still longer than max chars loses its
--- middle, so both its start and its end (where the episode number is when titles differ) stay in view.
-function M.short_names(names, max)
-    local p = #names > 1 and names[1] or ""
-    for k = 2, #names do
-        local n, i = names[k], 0
-        while i < #p and p:byte(i + 1) == n:byte(i + 1) do i = i + 1 end
+-- Names as the chooser shows them: only what tells the entries apart. Per name: the extension and every
+-- bracketed group go ([1080p WEB-DL], (BD), {x265}, full-width brackets; a [..] that is only a number such as
+-- [01] or [S01E02] stays, it may be the episode). Then what all names of the view share at the start and at the
+-- end goes, up to a word end ("Show - 01 - Title 1080p" -> "01 - Title"), so quality tags written in any way
+-- vanish when they are the same everywhere. If that leaves a name empty or equal to another, the names are
+-- shown without the shared part, then as they are. A name still longer than max chars loses its middle, so
+-- both its start and its end stay in view.
+-- shortcut: a per-file bracket that is not a number (a CRC) goes; a number in plain text (not brackets) that
+-- is the same everywhere (a year) goes too, fine for episodes, wrong only if all files really share a number.
+local function trim(s)
+    s = s:gsub("%s+", " "):gsub("^[%s%-_.,:~]+", ""):gsub("[%s%-_.,:~]+$", "")
+    return s
+end
+
+local function is_word(c) return c:match("%w") ~= nil or c:byte() >= 128 end
+
+local function strip_ext(name, is_file)
+    if is_file and M.kind(name) then name = name:gsub("%.[^.]*$", "") end
+    return name
+end
+
+local function strip_tags(name)
+    name = name:gsub("\227\128\144.-\227\128\145", " ")
+    name = name:gsub("%b[]", function(g)
+        local c = g:sub(2, -2)
+        if c:match("^%s*%a?%a?%d%d?%d?%d?[vV]?%d*%s*$") or c:match("^%s*[Ss]%d+[Ee]%d+%s*$") then return g end
+        return " "
+    end)
+    name = name:gsub("%b()", " "):gsub("%b{}", " ")
+    return trim(name)
+end
+
+local function strip_common(list)
+    if #list < 2 then return list end
+    local p = list[1]
+    for k = 2, #list do
+        local s, i = list[k], 0
+        while i < #p and p:byte(i + 1) == s:byte(i + 1) do i = i + 1 end
         p = p:sub(1, i)
     end
-    while #p > 0 and (p:byte(#p) >= 128 or p:sub(-1):match("%w")) do p = p:sub(1, -2) end
-    for _, n in ipairs(names) do if #n <= #p then p = "" end end
+    while #p > 0 and is_word(p:sub(-1)) do p = p:sub(1, -2) end
+    local rest = {}
+    for k, s in ipairs(list) do rest[k] = s:sub(#p + 1) end
+    local q = rest[1]
+    for k = 2, #rest do
+        local s, i = rest[k], 0
+        while i < #q and q:byte(#q - i) == s:byte(#s - i) do i = i + 1 end
+        q = q:sub(#q - i + 1)
+    end
+    while #q > 0 and is_word(q:sub(1, 1)) do q = q:sub(2) end
     local out = {}
+    for k, s in ipairs(rest) do out[k] = trim(s:sub(1, #s - #q)) end
+    return out
+end
+
+local function unusable(list)
+    local seen = {}
+    for _, s in ipairs(list) do
+        if s == "" or seen[s] then return true end
+        seen[s] = true
+    end
+    return false
+end
+
+function M.short_names(names, max, is_file)
+    local plain, cleaned = {}, {}
     for k, n in ipairs(names) do
+        plain[k] = strip_ext(n, is_file)
+        cleaned[k] = strip_tags(plain[k])
+    end
+    local out = strip_common(cleaned)
+    if unusable(out) then out = cleaned end
+    if unusable(out) then out = plain end
+    local res = {}
+    for k, n in ipairs(out) do
         local chars = {}
-        for ch in n:sub(#p + 1):gmatch("[^\128-\191][\128-\191]*") do chars[#chars + 1] = ch end
+        for ch in n:gmatch("[^\128-\191][\128-\191]*") do chars[#chars + 1] = ch end
         if #chars > max then
             local head = math.ceil((max - 1) / 2)
-            out[k] = table.concat(chars, "", 1, head) .. "…" .. table.concat(chars, "", #chars - (max - 1 - head) + 1)
+            res[k] = table.concat(chars, "", 1, head) .. "…" .. table.concat(chars, "", #chars - (max - 1 - head) + 1)
         else
-            out[k] = table.concat(chars)
+            res[k] = table.concat(chars)
         end
     end
-    return out
+    return res
 end
 
 return M
