@@ -168,3 +168,7 @@ Symptom (real use): a guest's check line stayed at "measuring". Cause not confir
 
 ## A torrent added twice never answered the first time
 Risk (found in review): `torrent.ps1` kept one pending add per hash, so a second add of the same torrent replaced the first, and the first caller (a deferred `on_load` hook) would wait forever. Fix: each add is its own job. Not reproduced.
+
+## Anime4K "did not work" after install.bat
+
+Symptom (a friend's machine): after `install.bat` with Anime4K, nothing changed, not even on Ctrl+1. Cause, as far as could be checked here: the installer only added the Ctrl+1/Ctrl+0 hotkeys, so Anime4K was off on every start (a hand-made setup usually turns it on in `mpv.conf`); and a failed Anime4K step (e.g. the GitHub download) only printed `error ...` above install.bat's "Готово", easy to miss. Rerunning `install.bat` did not even ask again, because the shaders were already there. Fix: `install-anime4k.ps1` also adds a marked block to `mpv.conf` (`[default]` first, since the file may end inside the user's profile); `install.bat` asks until `mpv.conf` mentions Anime4K and prints a warning when the step failed; `uninstall.bat` removes both blocks. Verified: `install.bat` in a sandbox `APPDATA` (mpv.conf ending in a profile): Anime4K is on at start with the plugin loaded, Ctrl+0 clears it, Ctrl+1 sets it again; a forced failure shows the warning; `uninstall.bat` restores mpv.conf byte for byte. Not verified: the friend's machine itself (why Ctrl+1 did nothing there is not known for certain).

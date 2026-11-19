@@ -19,18 +19,22 @@ try {
         Copy-Item (Join-Path $tmp 'x\*.glsl') $dir -Force
     } finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 
-    # Anime4K's own "Mode A (Fast)" chain. Ctrl+1 turns it on, Ctrl+0 off; the user's other lines stay untouched.
-    $chain = 'Clamp_Highlights', 'Restore_CNN_M', 'Upscale_CNN_x2_M', 'AutoDownscalePre_x2', 'AutoDownscalePre_x4', 'Upscale_CNN_x2_S' |
-        ForEach-Object { "~~/shaders/Anime4K_$_.glsl" }
-    $input = Join-Path $conf 'input.conf'
-    $old = if (Test-Path $input) { [IO.File]::ReadAllText($input) } else { '' }
-    if ($old -notmatch 'Anime4K_') {  # also skips a setup the user made by hand
-        $block = "`r`n# watch-together anime4k begin`r`n" +
-            'CTRL+1 no-osd change-list glsl-shaders set "' + ($chain -join ';') + '"; show-text "Anime4K: on"' + "`r`n" +
-            'CTRL+0 no-osd change-list glsl-shaders clr ""; show-text "Anime4K: off"' + "`r`n" +
-            "# watch-together anime4k end`r`n"
-        New-Item -ItemType Directory -Force $conf | Out-Null
-        [IO.File]::AppendAllText($input, $block)  # append only: the user's bytes stay as they are
+    # Anime4K's own "Mode A (Fast)" chain: on from every start (mpv.conf), Ctrl+0 off and Ctrl+1 on again for
+    # the session (input.conf). The user's other lines stay untouched.
+    $chain = ('Clamp_Highlights', 'Restore_CNN_M', 'Upscale_CNN_x2_M', 'AutoDownscalePre_x2', 'AutoDownscalePre_x4', 'Upscale_CNN_x2_S' |
+        ForEach-Object { "~~/shaders/Anime4K_$_.glsl" }) -join ';'
+    New-Item -ItemType Directory -Force $conf | Out-Null
+    function Add-Block([string]$file, [string[]]$lines) {
+        $path = Join-Path $conf $file
+        $old = if (Test-Path $path) { [IO.File]::ReadAllText($path) } else { '' }
+        if ($old -match 'Anime4K_') { return }  # also skips a setup the user made by hand
+        $block = "`r`n# watch-together anime4k begin`r`n" + ($lines -join "`r`n") + "`r`n# watch-together anime4k end`r`n"
+        [IO.File]::AppendAllText($path, $block)  # append only: the user's bytes stay as they are
     }
+    Add-Block 'input.conf' @(
+        ('CTRL+1 no-osd change-list glsl-shaders set "' + $chain + '"; show-text "Anime4K: on"'),
+        'CTRL+0 no-osd change-list glsl-shaders clr ""; show-text "Anime4K: off"')
+    # [default]: the end of mpv.conf may be inside the user's [profile]; this goes back to the top level.
+    Add-Block 'mpv.conf' @('[default]', ('glsl-shaders="' + $chain + '"'))
     "installed $dir"
 } catch { "error $($_.Exception.Message)" }

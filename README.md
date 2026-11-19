@@ -18,7 +18,7 @@ Each person does this once.
 
 1. Download the [latest release](https://github.com/H0oxy/mpv-watch-together/releases/latest) (Source code (zip)) and unpack it.
 2. Run `install.bat`. It copies the `watch-together` folder to `%APPDATA%\mpv\scripts\`.
-3. `install.bat` also offers, each with a yes/no question: downloading mpv itself when it is not found (to `%LOCALAPPDATA%\Programs\mpv`, no admin rights needed), and the [Anime4K](https://github.com/bloc97/Anime4K) shaders, an upscaler that removes soft edges in anime (Ctrl+1 on, Ctrl+0 off). Self-updates never run these two steps.
+3. `install.bat` also offers, each with a yes/no question: downloading mpv itself when it is not found (to `%LOCALAPPDATA%\Programs\mpv`, no admin rights needed), and the [Anime4K](https://github.com/bloc97/Anime4K) shaders, an upscaler that removes soft edges in anime (on from the start; Ctrl+0 off, Ctrl+1 on again). An install from v1.7.1 or earlier added only the hotkeys: run `install.bat` again to have it on by default. Self-updates never run these two steps.
 4. Restart mpv.
 
 If your mpv is portable and has a `portable_config` folder next to `mpv.exe`, copy `watch-together` into `portable_config\scripts\` by hand instead. To remove the script, run `uninstall.bat`.

@@ -21,13 +21,18 @@ if "%MPVSTATE%"=="missing" (
     )
 )
 
-rem Anime4K shaders: optional, asked once (skipped when its files are already there).
-if not exist "%APPDATA%\mpv\shaders\Anime4K_Upscale_CNN_x2_M.glsl" (
+rem Anime4K shaders: optional, asked until mpv.conf turns them on (older installs added only the hotkeys).
+findstr /c:"Anime4K_" "%APPDATA%\mpv\mpv.conf" >nul 2>&1 || (
     echo.
-    echo Anime4K - апскейлер, убирает мыльные края в аниме. Включается в mpv по Ctrl+1, выключается по Ctrl+0.
+    echo Anime4K - апскейлер, убирает мыльные края в аниме. Работает сразу; Ctrl+0 выключает, Ctrl+1 включает обратно.
     choice /c YN /m "Установить Anime4K"
     if errorlevel 1 if not errorlevel 2 (
         for /f "usebackq delims=" %%L in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-anime4k.ps1"`) do echo %%L
+        findstr /c:"Anime4K_" "%APPDATA%\mpv\mpv.conf" >nul 2>&1 || (
+            echo.
+            echo ВНИМАНИЕ: Anime4K НЕ установлен, причина в строке выше. Запусти install.bat ещё раз.
+            echo.
+        )
     )
 )
 

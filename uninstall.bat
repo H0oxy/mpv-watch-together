@@ -11,9 +11,9 @@ if exist "%ENG%" (
 )
 rem Torrent mode's log and the .torrent files guests fetched from their hosts.
 del /q "%APPDATA%\mpv\watch_together_torrent.log" "%APPDATA%\mpv\watch_together_torrent.log.old" 2>nul
-rem Anime4K: the shaders and the two hotkeys install.bat added (a hand-made setup is left alone).
+rem Anime4K: the shaders and the blocks install.bat added to input.conf and mpv.conf (a hand-made setup is left alone).
 if exist "%APPDATA%\mpv\shaders" del /q "%APPDATA%\mpv\shaders\Anime4K_*.glsl" 2>nul
-if exist "%APPDATA%\mpv\input.conf" powershell -NoProfile -ExecutionPolicy Bypass -Command "$f = Join-Path $env:APPDATA 'mpv\input.conf'; $e = [Text.Encoding]::GetEncoding(28591); $t = $e.GetString([IO.File]::ReadAllBytes($f)); $n = $t -replace '(?s)\r?\n# watch-together anime4k begin.*?# watch-together anime4k end\r?\n', ''; if ($n -ne $t) { [IO.File]::WriteAllBytes($f, $e.GetBytes($n)) }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "foreach ($c in 'input.conf', 'mpv.conf') { $f = Join-Path $env:APPDATA ('mpv\' + $c); if (-not (Test-Path $f)) { continue }; $e = [Text.Encoding]::GetEncoding(28591); $t = $e.GetString([IO.File]::ReadAllBytes($f)); $n = $t -replace '(?s)\r?\n# watch-together anime4k begin.*?# watch-together anime4k end\r?\n', ''; if ($n -ne $t) { [IO.File]::WriteAllBytes($f, $e.GetBytes($n)) } }"
 if exist "%TEMP%\watch-together" rmdir /s /q "%TEMP%\watch-together"
 echo Плагин удалён. Перезапусти mpv.
 pause
