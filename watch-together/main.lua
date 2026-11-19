@@ -2071,14 +2071,15 @@ local function choose_episode(t, cb)
         local entries
         entries, dir = tracks.folder(t.files, dir)
         root = root or dir
-        local names = { files = {}, dirs = {} }
-        for _, e in ipairs(entries) do table.insert(e.dir and names.dirs or names.files, e.name) end
-        local files, shared = tracks.short_names(names.files, 70, true)
-        local dirs = tracks.short_names(names.dirs, 50)
+        local names = {}
+        for _, e in ipairs(entries) do if not e.dir then names[#names + 1] = e.name end end
+        local files, title = tracks.short_names(names, 70, true)
         -- The show's name goes after the episode, cut at its end: from the names, else from the torrent's own folder.
-        local title = shared
-        if title == "" and root ~= "" then title = tracks.short_names({ root:match("([^/]+)/$") or "" }, 200)[1] end
-        title = title ~= "" and (" — " .. short(title, 40)) or ""
+        if title == "" and root ~= "" then title = tracks.clean(root:match("([^/]+)/$") or "") end
+        local show_title = title ~= "" and (" — " .. short(title, 40)) or ""
+        -- The season (the folders below the torrent's own) goes between them, unless the episode says it (S01E05).
+        local season = dir ~= root and tracks.season(dir:sub(#root + 1), title) or ""
+        season = season ~= "" and (" — " .. short(season, 30)) or ""
         local back = #stack > 0
         local items, at, fi, di = {}, {}, 0, 0
         if back then items[1] = T("torrent_back") end
@@ -2086,17 +2087,17 @@ local function choose_episode(t, cb)
         for _, e in ipairs(entries) do
             if e.dir then
                 di = di + 1
-                items[#items + 1] = dirs[di] .. "/  (" .. e.count .. ")"
+                items[#items + 1] = tracks.dir_label(e.name, title) .. "/  (" .. e.count .. ")"
                 if focus and focus:sub(1, #e.dir) == e.dir then item = #items end
             else
                 fi = fi + 1
-                items[#items + 1] = files[fi] .. title
+                items[#items + 1] = files[fi] .. (tracks.has_season(files[fi]) and "" or season) .. show_title
                 if focus and t.files[e.k].path == focus then item = #items end
             end
             at[#items] = e
         end
         local prompt = T("torrent_choose")
-        if dir ~= root then prompt = prompt .. "  " .. tracks.short_names({ dir:sub(#root + 1, -2) }, 50)[1] end
+        if dir ~= root then prompt = prompt .. "  " .. short(tracks.season(dir:sub(#root + 1), title), 50) end
         local nav
         input.select({ prompt = prompt, items = items, default_item = item,
             submit = function(i)

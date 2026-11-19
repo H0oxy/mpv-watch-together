@@ -259,8 +259,10 @@ do
     check("chooser: only tags differ: the names as they are, not two empty labels", n[1] == "Show [1080p]" and n[2] == "Show [720p]", d)
     n, d = names({ "Ep 1.mkv", "Ep 10.mkv" })
     check("chooser: a name that is the others' start keeps its number", n[1] == "1" and n[2] == "10", d)
-    n, d = names({ "Season 1", "Season 2" }, 50, false)
-    check("chooser: folders", n[1] == "1" and n[2] == "2", d)
+    check("chooser: folders keep their shared words", tracks.dir_label("Season 1", "") == "Season 1" and tracks.dir_label("Season 12 [BD 1080p]", "") == "Season 12")
+    check("chooser: a folder drops the show's title", tracks.dir_label("Show - Season 2 [BD]", "Show") == "Season 2" and tracks.dir_label("Show", "Show") == "Show")
+    check("chooser: the season beside an episode", tracks.season("Season 1/", "") == "Season 1" and tracks.season("S1/Rus/", "") == "S1 / Rus" and tracks.season("", "") == "")
+    check("chooser: an episode that says its season needs none", tracks.has_season("S01E05 - A") and tracks.has_season("s1e5") and not tracks.has_season("05"))
     n, d = names({ "Only one long name here.mkv" }, 10)
     check("chooser: a single name is only cut", n[1] == "Only …here" or n[1] == "Only…here", d)
 end

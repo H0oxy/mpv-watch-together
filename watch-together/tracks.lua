@@ -442,6 +442,29 @@ local function unusable(list)
     return false
 end
 
+-- A folder's name for the chooser: tags go (clean), and so does the show's title when the name starts with it
+-- ("Show - Season 2 [BD]" -> "Season 2"). Folders keep their shared words: "Season 1", "Season 2" stay as they are.
+function M.clean(name, is_file) return strip_tags(strip_ext(name, is_file)) end
+
+function M.dir_label(name, title)
+    local s = M.clean(name)
+    if title ~= "" and s:lower():sub(1, #title) == title:lower() then
+        local rest = trim(s:sub(#title + 1))
+        if rest ~= "" then return rest end
+    end
+    return s
+end
+
+-- The season shown beside an episode: the folders between the torrent's own folder and the episode
+-- ("Season 1/" -> "Season 1"). An episode label that already holds one (S01E05) needs none.
+function M.season(rel, title)
+    local out = {}
+    for seg in rel:gmatch("[^/]+") do out[#out + 1] = M.dir_label(seg, title) end
+    return table.concat(out, " / ")
+end
+
+function M.has_season(label) return label:match("[Ss]%d+%s*[Ee]%d+") ~= nil end
+
 function M.short_names(names, max, is_file)
     local plain, cleaned = {}, {}
     for k, n in ipairs(names) do
