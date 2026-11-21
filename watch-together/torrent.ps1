@@ -8,7 +8,12 @@
 #   preload <hash> <index>   fetch the start of that file ahead (the next episode); answered with preloaded
 #   fonts <hash> <i:ext:length;...>   save those font files to %TEMP%\watch-together\fonts\<hash> as <i>.<ext>
 #                     (one at a time; ones already there are kept); answered with fonts
+#   peer <hash> <address> <share port> <who>   guest: link our engine to the host's through its share port
+#                     (a tracker of ours names our tunnel as a peer); peer-stop ends it
+#   help <guest id> <hash> <index> <byte>   host: that guest is stuck there; keep a reader of ours there, so
+#                     our engine fetches that part and the guest's engine takes it over the link (6 s per ask)
 # Reports to main.lua: engine <bytes> <total> (downloading the engine) | ready <base url> | restarted |
+#   peerport <port> (the engine's BitTorrent port) |
 #   preloaded <hash> <index> | preload-failed <hash> <index> <text> | fonts <hash> <failed count> |
 #   files <id> <hash> <json> | stat <hash> <bytes per second> <active peers> <seeders> | error <id> <text>.
 # ASCII only, like bridge.ps1.
@@ -25,6 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::DefaultConnectionLimit = 64   # preload, fonts and helper readers run at once
 
 $mpv = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Pipe, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
 $mpv.Connect(5000)
@@ -114,7 +120,11 @@ function Set-EngineSettings {
     $s = Invoke-Engine '/settings' @{ action = 'get' }
     $want = @{ cacheSize = [int64]$CacheMB * 1MB; useDisk = $false; enableBonjour = $false; enableDLNA = $false;
                enableRutorSearch = $false; enableTorznabSearch = $false
-               preloadCache = 50 }   # a preload of the next episode fetches this share of cacheSize
+               preloadCache = 50     # a preload of the next episode fetches this share of cacheSize
+               # Room peers reach this port through the host's share port, so it must be known: a free one
+               # (TCP and UDP) each start. A rate limit turns on seeding: without it the engine gives a peer at
+               # most 100 KB more than it got from it, and a stuck guest has nothing to give. 1 GB/s: no limit.
+               PeersListenPort = Get-FreeBtPort; UploadRateLimit = 1048576; DisableUpload = $false }
     foreach ($k in $want.Keys) { $s | Add-Member -Force -NotePropertyName $k -NotePropertyValue $want[$k] }
     [void](Invoke-Engine '/settings' @{ action = 'set'; sets = $s })
 }
@@ -127,6 +137,22 @@ function Get-FreePort {
     $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
     $l.Start(); $p = $l.LocalEndpoint.Port; $l.Stop()
     $p
+}
+
+# The BitTorrent client listens on TCP and UDP (uTP) of one port, and fails to start if either is taken.
+function Get-FreeBtPort {
+    for ($i = 0; $i -lt 20; $i++) {
+        $p = Get-FreePort
+        try { (New-Object System.Net.Sockets.UdpClient($p)).Close(); return $p } catch { }
+    }
+    0   # TorrServer picks one; room peers then cannot reach it
+}
+
+# The engine's BitTorrent port, for share.ps1 to pass room peers to (main.lua puts it in user-data).
+function Send-PeerPort {
+    $p = 0
+    try { $p = [int](Invoke-Engine '/settings' @{ action = 'get' }).PeersListenPort } catch { }
+    if ($p -gt 0) { Send-Lua @('peerport', "$p") }
 }
 
 function Use-State($st) {
@@ -219,6 +245,7 @@ try {
     exit 1
 }
 Send-Lua @('ready', $Base)
+Send-PeerPort
 
 $adding = New-Object System.Collections.ArrayList   # @{ id; hash; until }: added, waiting for the file list
 $probe = ''      # hash whose speed is reported
@@ -228,6 +255,89 @@ $mpvTask = $mpvIn.ReadLineAsync()
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $down = $false   # our engine stopped answering and could not be started again yet
 $misses = 0      # health checks in a row that got no answer
+$helpers = @{}   # host: guest id -> @{ hash; index; pos; req; task; opened; seen }, a reader where that guest is stuck
+$link = $null    # guest: @{ hash; addr; port; who; next } of the host's share port our engine links to
+$tracker = $null; $tunnel = $null; $trkAccept = $null; $tunAccept = $null   # guest: 127.0.0.1 listeners
+$pipes = New-Object System.Collections.ArrayList     # @{ a; b; task }: our engine <-> the host's, through the tunnel
+
+# Room peers, guest side. Our engine learns of the host's engine from a tracker of ours on 127.0.0.1 (TorrServer
+# drops x.pe from magnets, trackers it keeps); that tracker names our tunnel, and the tunnel passes each
+# connection to the host's share port, which passes it on to the host's engine.
+function Open-PeerListeners {
+    if ($script:tracker) { return }
+    $script:tracker = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0); $script:tracker.Start()
+    $script:tunnel = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0); $script:tunnel.Start()
+    $script:trkAccept = $script:tracker.AcceptTcpClientAsync()
+    $script:tunAccept = $script:tunnel.AcceptTcpClientAsync()
+}
+
+# Asked for first: a torrent the engine closed while idle comes back from its db with its own trackers, not
+# from this magnet with only ours. Repeated every minute, so a restarted engine or a reopened torrent gets it.
+function Add-PeerTracker {
+    $tr = [Uri]::EscapeDataString("http://127.0.0.1:$($tracker.LocalEndpoint.Port)/announce")
+    try { [void](Invoke-Engine '/torrents' @{ action = 'get'; hash = $link.hash }) } catch { }
+    try { [void](Invoke-Engine '/torrents' @{ action = 'add'; link = "magnet:?xt=urn:btih:$($link.hash)&tr=$tr" }) } catch { }
+}
+
+# info_hash as the engine sends it (20 bytes, percent-encoded, '+' for a space) -> 40 hex digits.
+function Get-HexHash([string]$q) {
+    $hex = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $q.Length; $i++) {
+        if ($q[$i] -eq '%' -and $i + 2 -lt $q.Length) { [void]$hex.Append($q.Substring($i + 1, 2).ToLower()); $i += 2 }
+        elseif ($q[$i] -eq '+') { [void]$hex.Append('20') }
+        else { [void]$hex.Append(([int][char]$q[$i]).ToString('x2')) }
+    }
+    $hex.ToString()
+}
+
+# One announce: our tunnel is the peer for the room torrent, nobody for any other.
+function Send-Announce($client) {
+    try {
+        $s = $client.GetStream(); $s.ReadTimeout = 2000
+        $head = New-Object System.Text.StringBuilder
+        while ($head.Length -lt 8192 -and -not $head.ToString().EndsWith("`r`n`r`n")) {
+            $b = $s.ReadByte(); if ($b -lt 0) { break }; [void]$head.Append([char]$b)
+        }
+        $peers = [byte[]]@()
+        if ($link -and $head.ToString() -match '[?&]info_hash=([^& ]+)' -and (Get-HexHash $matches[1]) -eq $link.hash) {
+            $p = $tunnel.LocalEndpoint.Port
+            $peers = [byte[]]@(127, 0, 0, 1, ($p -shr 8), ($p -band 255))
+        }
+        $body = [byte[]]($utf8.GetBytes("d8:intervali30e5:peers$($peers.Length):") + $peers + $utf8.GetBytes('e'))
+        $hdr = $utf8.GetBytes("HTTP/1.0 200 OK`r`nContent-Type: text/plain`r`nContent-Length: $($body.Length)`r`n`r`n")
+        $s.Write($hdr, 0, $hdr.Length); $s.Write($body, 0, $body.Length)
+    } catch { } finally { $client.Close() }
+}
+
+# A connection from our engine: on to the host's share port, which answers {ok} and then passes raw bytes.
+function Open-Tunnel($local) {
+    $remote = New-Object System.Net.Sockets.TcpClient
+    try {
+        if (-not $remote.ConnectAsync($link.addr, $link.port).Wait(3000)) { throw 'no answer' }
+        $remote.NoDelay = $true; $local.NoDelay = $true
+        $rs = $remote.GetStream(); $rs.ReadTimeout = 5000
+        $req = $utf8.GetBytes((ConvertTo-Json -Compress -InputObject @{ peer = $link.hash; who = $link.who }) + "`n")
+        $rs.Write($req, 0, $req.Length)
+        $line = New-Object System.Collections.Generic.List[byte]   # byte by byte: what follows is the engine's
+        while ($true) {
+            $b = $rs.ReadByte()
+            if ($b -lt 0 -or $line.Count -gt 4096) { throw 'no answer' }
+            if ($b -eq 10) { break }
+            $line.Add([byte]$b)
+        }
+        if (-not ($utf8.GetString($line.ToArray()) -match '"ok"')) { throw 'refused' }
+        $ls = $local.GetStream()
+        [void]$pipes.Add(@{ a = $local; b = $remote
+            task = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($ls.CopyToAsync($rs), $rs.CopyToAsync($ls))) })
+    } catch { $local.Close(); $remote.Close() }
+}
+
+function Close-Pipes { foreach ($p in $pipes) { $p.a.Close(); $p.b.Close() }; $pipes.Clear() }
+
+function Close-Helper($hp) {
+    try { $hp.req.Abort() } catch { }
+    if ($hp.task.Status -eq 'RanToCompletion') { $hp.task.Result.Close() }
+}
 
 function File-List($st) {
     $list = @()
@@ -272,6 +382,35 @@ function On-Command($a) {
             }
             $dir = Join-Path $env:TEMP "watch-together\fonts\$h"
             [void]$fontJobs.Add(@{ hash = $h; dir = $dir; queue = $q; failed = 0; task = $null })
+        }
+    } elseif ($verb -eq 'peer') {
+        $h = ([string]$a[2]).ToLower(); $addr = [string]$a[3]; $p = 0
+        if ($h -match '^[0-9a-f]{40}$' -and $addr -match '^[\w.:-]{1,255}$' -and [int]::TryParse([string]$a[4], [ref]$p) -and $p -ge 1 -and $p -le 65535) {
+            Close-Pipes
+            $script:link = @{ hash = $h; addr = $addr; port = $p; who = ([string]$a[5]) -replace '[^\w .()\-]', ''; next = 0 }
+            Open-PeerListeners
+        }
+    } elseif ($verb -eq 'peer-stop') {
+        $script:link = $null
+        Close-Pipes
+    } elseif ($verb -eq 'help') {
+        # Our engine keeps the pieces around each reader and fetches the ones missing there. A reader that is
+        # never read from stays where it was opened; it is opened again before TorrServer parks it as idle
+        # (60 s), and when the guest has moved on.
+        $id = [string]$a[2]; $h = ([string]$a[3]).ToLower(); $i = 0; $pos = [int64]0
+        if ($id -match '^p\d{1,4}$' -and $h -match '^[0-9a-f]{40}$' -and [int]::TryParse([string]$a[4], [ref]$i) -and $i -ge 1 -and
+            [int64]::TryParse([string]$a[5], [ref]$pos) -and $pos -ge 0) {
+            $t = $clock.Elapsed.TotalSeconds
+            $hp = $helpers[$id]
+            if (-not $hp -or $hp.hash -ne $h -or $hp.index -ne $i -or $pos -lt $hp.pos - 8MB -or $pos -gt $hp.pos + 32MB -or $t - $hp.opened -gt 40) {
+                if ($hp) { Close-Helper $hp } elseif ($helpers.Count -ge 8) { return }
+                $req = [Net.HttpWebRequest]::Create("$Base/stream?link=$h&index=$i&play")
+                $req.AddRange($pos)
+                if ($auth) { $req.Headers['Authorization'] = $auth }
+                $hp = @{ hash = $h; index = $i; pos = $pos; req = $req; task = $req.GetResponseAsync(); opened = $t }
+                $helpers[$id] = $hp
+            }
+            $hp.seen = $t
         }
     } elseif ($verb -eq 'probe') {
         $script:probe = ([string]$a[2]).ToLower()
@@ -346,6 +485,8 @@ while ($true) {
                     $down = $false; $misses = 0
                     Send-Lua @('restarted')
                     if ($Base -ne $was) { Send-Lua @('ready', $Base) }
+                    Send-PeerPort   # a new start, a new BitTorrent port
+                    if ($link) { $link.next = 0 }
                 } catch {
                     if (-not $down) { Send-Lua @('error', '', (Clean $_.Exception.Message)) }
                     $down = $true
@@ -363,9 +504,25 @@ while ($true) {
         }
     }
     if ($fontJobs.Count -gt 0) { Step-Fonts }
+    if ($trkAccept -and $trkAccept.IsCompleted) {
+        $c = if ($trkAccept.IsFaulted) { $null } else { $trkAccept.Result }
+        $trkAccept = $tracker.AcceptTcpClientAsync()
+        if ($c) { Send-Announce $c }
+    }
+    if ($tunAccept -and $tunAccept.IsCompleted) {
+        $c = if ($tunAccept.IsFaulted) { $null } else { $tunAccept.Result }
+        $tunAccept = $tunnel.AcceptTcpClientAsync()
+        if ($c -and $link) { Open-Tunnel $c } elseif ($c) { $c.Close() }
+    }
+    foreach ($p in @($pipes)) { if ($p.task.IsCompleted) { $p.a.Close(); $p.b.Close(); $pipes.Remove($p) } }
 
     if ($now -lt $next) { continue }
     $next = $now + 1
+
+    if ($link -and $now -ge $link.next) { $link.next = $now + 60; Add-PeerTracker }
+    foreach ($id in @($helpers.Keys)) {
+        if ($now - $helpers[$id].seen -gt 6) { Close-Helper $helpers[$id]; $helpers.Remove($id) }   # that guest plays again
+    }
 
     # The file list comes once the engine has the torrent's metadata from its peers.
     foreach ($job in @($adding)) {

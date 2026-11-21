@@ -29,4 +29,5 @@ Docs:
 - [docs/usage.md](docs/usage.md): notes from real use with Porthole
 - [docs/decisions.md](docs/decisions.md): why a custom plugin, Porthole, star topology, Steam names, update flow, TorrServer
 - [docs/torrent.md](docs/torrent.md): torrent mode: engine, stream URLs, opening, room messages, swarm check
+- [docs/torrent-peers.md](docs/torrent-peers.md): torrent mode: the room's engines exchange pieces through the host's share port
 - [docs/bugs.md](docs/bugs.md): verified pitfalls

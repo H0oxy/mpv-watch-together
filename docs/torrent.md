@@ -17,8 +17,8 @@ TorrServer (github.com/YouROK/TorrServer, GPL-3.0), one Windows exe from the Mat
 5. **Start.** It runs `TorrServer.exe -p <port> -i 127.0.0.1 -d <engine dir> -a`, with stderr in `engine-errors.log`. If the engine exits before `/echo` answers, the last line of that log becomes the error the user sees (TorrServer logs harmless notes first, such as "ffprobe and avprobe not found in $PATH").
 6. **Password check.** TorrServer silently runs without a password when it cannot read `accs.db` (`auth.go`: `getAccounts` returns nil and no middleware is added). So once it answers, the same 401 check runs. An engine that takes requests without the password is stopped and refused: "the engine started without its password".
 7. **Watchdog.** It also starts a hidden `powershell` (`-EncodedCommand`). Every 5 s that process looks for a `powershell` whose command line runs `torrent.ps1` with our `-Exe` (compared with "/" turned into "\"). Once there is none, it kills the engine, but only if its pid still belongs to `TorrServer.exe` at our path: an engine that died earlier may have left its pid to another program. Every mpv window that uses the engine runs such a helper, so the engine stays while any of them does. A helper ends with its mpv, also a killed one: its IPC pipe breaks and the read loop exits. mpv kills `torrent.ps1` itself on a normal exit, so the helper cannot clean up. (It used to wait for every process named like the starting mpv, and any mpv window, even one without a torrent, kept the engine: bugs.md.)
-8. **Settings.** It reads `/settings`, then writes them back with `cacheSize = torrent_cache MB`, `useDisk = false`, and Bonjour, DLNA, Rutor and Torznab off. The settings are replaced as a whole, which is why they are read first.
-9. It answers `ready <base url>`, and Lua takes its stream address from that. Commands sent before that wait in `engine.queue`.
+8. **Settings.** It reads `/settings`, then writes them back with `cacheSize = torrent_cache MB`, `useDisk = false`, and Bonjour, DLNA, Rutor and Torznab off. The settings are replaced as a whole, which is why they are read first. For room peers (below) it also sets `PeersListenPort` to a port free for TCP and UDP (the BitTorrent client listens on both and does not start if either is taken; a new one each start) and `UploadRateLimit = 1048576` KB/s with `DisableUpload = false`.
+9. It answers `ready <base url>`, and Lua takes its stream address from that. Commands sent before that wait in `engine.queue`. Then it reads `PeersListenPort` back from `/settings` and reports `peerport <n>` (also for another window's engine, and again after a restart); Lua puts it in `user-data/watch-together/peer-port`.
 
 **Health check.** Every 5 s `torrent.ps1` checks `/echo`. After two misses in a row (10 s, so a slow answer under load does not count), it runs steps 2-9 again with `-Restart`. If something still holds the port, that is the engine being slow, and no second engine starts. A new start reuses the port and password, so the playlist's stream URLs keep working; it reports `restarted`, plus `ready <base>` if the port had to change. Torrents come back from the engine's db (`save_to_db`) when their stream is asked for. `engine_hash()` accepts any `127.0.0.1` port, so entries made before a port change still count as torrent streams.
 
@@ -28,6 +28,8 @@ Commands (Lua → `script-message watch-together-torrent-cmd …`, seen by `torr
 |---|---|---|
 | `add <id> <link>` | `POST /torrents {action: add, link, save_to_db: true}`, then `get` every second until `file_stats` appear (90 s limit) | `files <id> <hash> <json [{i, path, length}]>` or `error <id> <text>` |
 | `probe <hash>` / `probe-stop` | `get` every second | `stat <hash> <bytes/s> <active peers> <seeders>` |
+| `peer <hash> <address> <share port> <who>` / `peer-stop` | guest: room peer link (below) | none |
+| `help <guest id> <hash> <index> <byte>` | host: a reader where that guest is stuck (below), closed 6 s after the last ask | none |
 | `fonts <hash> <i:ext:length;…>` | saves each file as `%TEMP%\watch-together\fonts\<hash>\<i>.<ext>` through `/stream?link&index&play`, one at a time, keeping one of the right size from earlier | `fonts <hash> <failed count>` |
 
 `link` is a magnet, a bare hash, or `file:///C:/path/x.torrent`; TorrServer's `ParseLink` takes all three. `save_to_db` matters: TorrServer closes a torrent that has had no reader for up to a minute (`TorrentDisconnectTimeout`), and a later `/stream?link=<hash>` brings it back from its db with the original trackers. Without the db it would come back from the hash alone.
@@ -104,6 +106,10 @@ Guest (`on_room_torrent`):
 6. A new torrent or none (`drop_room_torrent`, also on leave) removes the old torrent's entries. The playing one is marked in `replaced` and goes at the next `start-file`.
 7. If adding fails (an error, no file list within 90 s, or a hash other than the announced one, with no fallback left), `room_torrent` is cleared and the same message is tried again 30 s later. That only happens while the guest is in the room and the host has sent no other torrent since (`last_room_torrent`). The host sends it only on hello and on a change, so without this a guest would stay on its old file until it rejoined.
 
+## Room peers
+
+In a room the engines also exchange pieces: every guest's engine is a BitTorrent peer of the host's, through the host's share port, and a stuck guest gets a reader in the host's engine where it stands. Details: [torrent-peers.md](torrent-peers.md).
+
 ## Next episode ahead
 
 `preload_next()` runs in the 1 s timer for every player. Once a torrent episode has `torrent_preload` seconds (120) or less left, it looks at the next playlist entry, only once per episode (`preloaded_path`). If that entry is an engine stream, it sends `preload <hash> <index>`. A next entry that is a local file or a host stream needs nothing, so a guest with its own copy fetches nothing.
@@ -165,12 +171,15 @@ The exe path goes in as `main.lua` gives it, with "/" separators. Last run: 7/7;
 - back to a local file;
 - bad hashes and a magnet with a line break never reach the engine;
 - a guest's torrent log records the room torrent, its episodes and the check;
+- room peers: each guest's tracker names its tunnel for the room torrent and nobody for another hash; bytes go both ways from the tunnel through the host's share port to a listener standing in for the host's engine (`bt_port` in the fake's settings);
+- a stuck guest gets a reader in the host's engine where it stands (the fake's streams of the .torrent stop after 150 KB, `stall`; the host's Range request shows in `/log`);
+- the watched part keeps to its own limit (`demuxer-donate-buffer` off);
 - a room torrent the guest's engine could not take is tried again (`fake_torrserver.py` reads its config on every request, so the test adds the torrent after the first try failed);
 - a torrent watched before goes on where it stopped without the chooser;
 - the window's close button quits mpv while a dropped torrent's chooser is open (`keypress CLOSE_WIN`);
 - extra tracks: a player with Russian display language gets the episode's voice-over (title from its studio folder, `ru`) and subtitles, hears the voice-over first, the font is fetched, and the next episode gets its own files and the font folder. The stand-in audio files are episodes, so the test counts only audio and subtitle tracks.
 
-Last run: 34/34. `tests\tracks.ps1`: 13/13.
+Last run: 39/39. `tests\tracks.ps1`: 13/13.
 
 ## Log
 
@@ -183,7 +192,8 @@ Last run: 34/34. `tests\tracks.ps1`: 13/13.
 - the room torrent a guest got, whether the .torrent came from the share port, and how many episodes it knows;
 - a room file the guest doesn't have (once per name);
 - every `file-loaded` while torrents are involved;
-- the check start and stop, and each speed sample with the peer count and seconds buffered.
+- the check start and stop, and each speed sample with the peer count and seconds buffered;
+- room peers: the guest's link on and off, and on the host each guest whose engine linked.
 
 Past 1 MB at startup the log moves to `.old`. When something fails on a friend's PC, ask for this file.
 

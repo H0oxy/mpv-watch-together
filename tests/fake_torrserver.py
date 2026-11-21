@@ -3,14 +3,19 @@
   python fake_torrserver.py <port> <config.json>
 
 config.json: {"torrents": {"<hash>": [["Show/S01E01.mkv", "C:\\path\\ep1.mkv"], ...]},
-              "files": {"<.torrent path>": "<hash>"}, "speed_file": "<path holding bytes/s>"}
-GET /log returns every link that was added, so a test can see what the plugin handed the engine.
+              "files": {"<.torrent path>": "<hash>"}, "speed_file": "<path holding bytes/s>",
+              "bt_port": <PeersListenPort in /settings>, "stall": {"<hash>": <bytes>}}
+"stall": every player stream of that torrent stops after that many bytes until the entry is gone (a guest
+stuck on a slow swarm).
+GET /log returns every link that was added, so a test can see what the plugin handed the engine, plus
+"preload <hash> <index>" and "range <hash> <index> <start>" (torrent.ps1's own /stream requests with a Range).
 """
 import json
 import os
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -79,7 +84,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
         if self.path == "/settings":
-            return self.reply(200, {"cacheSize": 64 << 20, "useDisk": False} if req.get("action") == "get" else {})
+            got = {"cacheSize": 64 << 20, "useDisk": False, "PeersListenPort": config().get("bt_port", 0)}
+            return self.reply(200, got if req.get("action") == "get" else {})
         if self.path == "/torrents":
             action = req.get("action")
             if action == "add":
@@ -121,6 +127,9 @@ class Handler(BaseHTTPRequestHandler):
         size = os.path.getsize(local)
         start, end = 0, size - 1
         m = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
+        if url.path == "/stream" and m:
+            with LOCK:
+                LOG.append("range %s %d %s" % (h, index, m.group(1)))
         if m:
             start = int(m.group(1))
             if m.group(2):
@@ -145,16 +154,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
+        player = url.path.startswith("/stream/")
         try:
             with open(local, "rb") as f:
                 f.seek(start)
                 left = end - start + 1
+                sent = 0
                 while left > 0:
-                    chunk = f.read(min(262144, left))
+                    while player and sent >= config().get("stall", {}).get(h, float("inf")):
+                        time.sleep(0.2)
+                    chunk = f.read(min(65536, left))
                     if not chunk:
                         break
                     self.wfile.write(chunk)
                     left -= len(chunk)
+                    sent += len(chunk)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 

@@ -1176,6 +1176,8 @@ local function on_guest_message(id, m)
         local function num(v) return type(v) == "number" and v >= 0 and v < 1e12 and v or nil end
         g.check = { speed = num(m.r.speed), need = num(m.r.need), peers = num(m.r.peers), buf = num(m.r.buf),
                     ["local"] = m.r["local"] == true, away = m.r.away == true }
+    elseif m.t == "need" and type(m.pos) == "number" and m.pos >= 0 and m.pos < 1e13 then
+        g.need = { pos = math.floor(m.pos), at = mp.get_time() }  -- stuck at this byte of its file (room peers)
     elseif m.t == "wait" then
         local r = (m.reason == "buffering" or m.reason == "loading") and m.reason or nil
         if r ~= g.wait then g.wait, g.wait_since, g.gave_up = r, mp.get_time(), nil end
@@ -1713,6 +1715,8 @@ mp.register_script_message("watch-together-share", function(kind, a, b)
         osd(T("share_watching", short(a, 24), short(b, 60)))
     elseif kind == "error" then
         osd(T("error", tostring(a)))
+    elseif kind == "peer" then
+        tlog("room peers: %s's torrent engine is linked to ours", tostring(a))
     end
 end)
 
@@ -1817,6 +1821,9 @@ function buffer.apply()
     end
     mp.set_property("file-local-options/demuxer-max-bytes", ahead .. "MiB")
     mp.set_property("file-local-options/demuxer-max-back-bytes", back .. "MiB")
+    -- mpv lets the watched part grow into whatever the part ahead does not use: with a swarm slower than
+    -- the video, the whole buffer became watched video. Off, the watched part keeps to its own limit.
+    mp.set_property("file-local-options/demuxer-donate-buffer", "no")
 end
 
 -- mpv keeps 150 MB ahead and 50 behind by default: about a minute of 4K. Only streams from the host or
@@ -2250,6 +2257,10 @@ mp.register_script_message("watch-together-torrent", function(kind, a, b, c, d)
         tlog("preload of #%s in %s: %s", tostring(b), tostring(a), kind == "preloaded" and "done" or tostring(c))
     elseif kind == "restarted" then
         tlog("engine: it had stopped and runs again")
+    elseif kind == "peerport" then
+        -- share.ps1 passes room members' engines to this port (room peers).
+        local p = tonumber(a)
+        if p and p >= 1 and p <= 65535 then mp.set_property("user-data/watch-together/peer-port", string.format("%d", p)) end
     elseif kind == "files" then
         local job = engine_jobs[a]
         engine_jobs[a] = nil
@@ -2405,6 +2416,7 @@ function on_room_torrent(m)
             set_torrent_files(t, list)
             torrents[h] = t
             add_torrent_entries(t)
+            room_torrent.ready = true  -- our engine has it: it can link to the host's (room peers)
             tlog("room torrent: %s episodes known", #t.files)
             osd(T("torrent_ready"))
             if host_state then mp.add_timeout(0.5, apply_host_state) end
@@ -2557,6 +2569,36 @@ mp.add_hook("on_preloaded", 50, function(hook)
     end
     tlog("tracks for #%d: %s", index, table.concat(names, ", "))
     mp.add_timeout(5, go_on)
+end)
+
+-- Room peers (torrent.md): a guest's engine is a BitTorrent peer of the host's, through the host's share
+-- port, so pieces go both ways. A guest short of video says at which byte of the episode; the host keeps a
+-- reader of its engine there, so its engine fetches that part, and the guest's engine takes it over the link.
+local peer_link = {}        -- guest: {key, engine} the engine was last told to link to
+mp.add_periodic_timer(1, function()
+    local key = role == "join" and room_torrent and room_torrent.ready and host_files and joined_address
+                and (room_torrent.hash .. " " .. joined_address .. " " .. host_files.port) or nil
+    if peer_link.engine ~= engine then peer_link = { engine = engine } end  -- a new helper knows nothing yet
+    if key ~= peer_link.key and engine then
+        if key then engine_cmd("peer", room_torrent.hash, joined_address, tostring(host_files.port), room_name or my_name)
+        else engine_cmd("peer-stop") end
+        tlog("room peers: %s", key and ("linking to " .. key) or "link off")
+        peer_link.key = key
+    end
+    if role == "join" and status == "connected" and engine_hash(mp.get_property("path")) then
+        local short = mp.get_property_native("paused-for-cache") or (not mp.get_property_native("demuxer-cache-idle")
+                      and (mp.get_property_number("demuxer-cache-duration") or 0) < 10)
+        local pos = mp.get_property_number("stream-pos")
+        if short and pos and pos >= 0 then send("host", { t = "need", pos = pos }) end
+    elseif role == "host" and engine then
+        local hash, index = engine_hash(mp.get_property("path"))
+        for id, g in pairs(members) do
+            local n = g.need
+            if hash and index and n and mp.get_time() - n.at < 3 and g.file == media_name() then
+                engine_cmd("help", id, hash, tostring(index), string.format("%d", n.pos))
+            end
+        end
+    end
 end)
 
 end  -- torrents

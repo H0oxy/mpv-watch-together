@@ -2,6 +2,8 @@
 # Request: one JSON line {"file": "<name>", "offset": <bytes already there>, "who": "<guest>"}.
 # Answer: one JSON line {"size": <total>, "offset": <start>} or {"error": "<text>"}, then the bytes from offset.
 # With "length" (stream.ps1, watching without downloading) only that many bytes, and a bad offset is an error.
+# {"peer": "<hash>", "who": ...} (a guest's torrent.ps1): {"ok": true}, then raw bytes to and from our torrent
+# engine's BitTorrent port, which main.lua puts in user-data.
 # Several downloads run at once through async copies. ASCII only, like bridge.ps1.
 param(
     [Parameter(Mandatory)][string]$Pipe,
@@ -104,8 +106,23 @@ while ($true) {
                 }
                 $req = ConvertFrom-Json $utf8.GetString($buf.ToArray())
                 $name = [string]$req.file
-                $path = Find-Shared $name
-                if (-not $path) {
+                $path = if ($req.peer) { $null } else { Find-Shared $name }
+                $bt = if ($req.peer) { [int](Get-Mpv 'user-data/watch-together/peer-port') } else { 0 }
+                if ($req.peer -and $bt -le 0) {
+                    Write-Line $s @{ error = 'no torrent engine' }
+                    $client.Close()
+                } elseif ($req.peer) {
+                    # A room member's torrent engine to ours (torrent.ps1, room peers): raw bytes both ways.
+                    $engine = New-Object System.Net.Sockets.TcpClient
+                    $engine.Connect('127.0.0.1', $bt)
+                    $engine.NoDelay = $true
+                    $es = $engine.GetStream()
+                    Write-Line $s @{ ok = $true }
+                    [void]$transfers.Add(@{ client = $client; peer = $engine
+                        task = [System.Threading.Tasks.Task]::WhenAny([System.Threading.Tasks.Task[]]@($s.CopyToAsync($es), $es.CopyToAsync($s))) })
+                    $who = ([string]$req.who) -replace '[^\w .()\-]', ''
+                    if ($watchers.Add("$who|peer")) { Send-Lua @('peer', $who) }
+                } elseif (-not $path) {
                     Write-Line $s @{ error = 'not shared' }
                     $client.Close()
                 } elseif ($req.length) {
@@ -152,11 +169,12 @@ while ($true) {
     foreach ($t in @($transfers)) {
         if ($t.task.IsCompleted) {
             if ($t.file) { $t.file.Close() }
+            if ($t.peer) { $t.peer.Close() }
             $t.client.Close()
             $transfers.Remove($t)
         }
     }
 }
 
-foreach ($t in $transfers) { if ($t.file) { $t.file.Close() }; $t.client.Close() }
+foreach ($t in $transfers) { if ($t.file) { $t.file.Close() }; if ($t.peer) { $t.peer.Close() }; $t.client.Close() }
 $listener.Stop()

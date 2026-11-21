@@ -4,7 +4,7 @@
 # Usage: powershell -ExecutionPolicy Bypass -File tests\torrent.ps1 -Mpv C:\path\mpv.exe [-Python python]
 # Needs the test videos that e2e.ps1 creates in %TEMP%.
 param([string]$Mpv = 'mpv', [string]$Python = 'python', [int]$Port = 47870, [int]$SharePort = 47871,
-      [int]$EnginePort = 47872, [int]$RawPort = 47873)
+      [int]$EnginePort = 47872, [int]$RawPort = 47873, [int]$BtPort = 47874)
 $ErrorActionPreference = 'Stop'
 $script = Join-Path (Split-Path $PSScriptRoot) 'watch-together'
 $ep1 = Join-Path $env:TEMP 'watch-together-ep1.mkv'; $ep2 = Join-Path $env:TEMP 'watch-together-ep2.mkv'
@@ -34,7 +34,7 @@ $cfg = @{ torrents = @{ $h1 = @(@('Show/S01E01.mkv', $ep1), @('Show/S01E02.mkv',
                                 @('Ext/Rus Subs/Show 01.ass', $ass), @('Ext/Rus Subs/Show 02.ass', $ass),
                                 @('Ext/Rus Subs/Fonts/Some Font.ttf', $cover));
                         $h6 = @(@('Big/Season 1/E01.mkv', $ep1), @('Big/Season 1/E02.mkv', $ep2), @('Big/Season 2/S2E01.mkv', $ep1)) };
-          speed_file = $speedFile }
+          speed_file = $speedFile; bt_port = $BtPort }
 $cfgFile = Join-Path $run 'fake.json'; [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
 $magnet = "magnet:?xt=urn:btih:$h1&dn=Show&tr=udp%3A%2F%2Ftracker.example%3A80"
 
@@ -72,7 +72,15 @@ function Start-Player([string]$n, [string[]]$files, [int]$port = $Port, [string]
 function Title($ipc) { [string](P $ipc 'media-title') }
 function Engine-Count($ipc) { @((P $ipc 'playlist') | Where-Object { $_.filename -like "http://127.0.0.1:$EnginePort/stream/*" }).Count }
 function Panel($ipc) { @(P $ipc 'user-data/watch-together/panel') -join ' | ' }
-function Added { @(Invoke-RestMethod -UseBasicParsing "http://127.0.0.1:$EnginePort/log") }
+function Engine-Log { @((Invoke-RestMethod -UseBasicParsing "http://127.0.0.1:$EnginePort/log") | ForEach-Object { $_ }) }  # one item per entry
+# Room peers add a tracker of their own and the host's helper readers ask with a Range; Added leaves both out.
+function Peer-Adds { @(Engine-Log | Where-Object { $_ -like '*&tr=http%3A%2F%2F127.0.0.1%3A*' }) }
+function Added { @(Engine-Log | Where-Object { $_ -notlike 'range *' -and $_ -notlike '*&tr=http%3A%2F%2F127.0.0.1%3A*' }) }
+function Read-Bytes($stream, [int]$n) {
+    $stream.ReadTimeout = 5000; $buf = New-Object byte[] $n; $got = 0
+    try { while ($got -lt $n) { $r = $stream.Read($buf, $got, $n - $got); if ($r -le 0) { break }; $got += $r } } catch { }
+    $utf8.GetString($buf, 0, $got)
+}
 function Spread($list) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $p = foreach ($x in $list) {
@@ -86,6 +94,8 @@ function Spread($list) {
 $fake = Start-Process $Python -PassThru -WindowStyle Hidden -ArgumentList @('-I', "`"$(Join-Path $PSScriptRoot 'fake_torrserver.py')`"", "$EnginePort", "`"$cfgFile`"")
 $procs = @()
 $listener = $null
+$bt = New-Object System.Net.Sockets.TcpListener([Net.IPAddress]::Loopback, $BtPort)   # A's engine's BitTorrent port
+$bt.Start()
 try {
     [void](Wait-Until { try { [void](Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$EnginePort/echo"); $true } catch { $false } } 10)
     $procs += Start-Player 'A' @($ep1)
@@ -112,6 +122,7 @@ try {
     $null = I $a @('script-message', 'watch-together-buffer', '2048')
     $ok = Wait-Until { (P $a 'demuxer-max-bytes') -eq 1536MB -and (P $a 'demuxer-max-back-bytes') -eq 512MB } 3
     Check 'the buffer choice reaches the playing stream' $ok ("ahead={0} behind={1}" -f (P $a 'demuxer-max-bytes'), (P $a 'demuxer-max-back-bytes'))
+    Check 'the watched part keeps to its own limit' ((P $a 'demuxer-donate-buffer') -eq $false) ''
     # A little short (about 1.8 GB allowed of 2 GB): 3/4 of the cut comes off the watched part, 1/4 off the
     # far end of the part ahead, so some of what was watched stays for a short rewind.
     $ok = Wait-Until { $null = I $a @('script-message-to', 'watch_together', 'watch-together-ram', '3000', '8000')
@@ -131,6 +142,34 @@ try {
     Check 'guests add the magnet with its trackers' (@((Added) | Where-Object { $_ -eq $magnet }).Count -ge 3) ((Added) -join ', ')
     $cl = @((P $c 'playlist') | ForEach-Object { $_.filename })
     Check "C keeps its own episode 1 and streams only episode 2" ((Engine-Count $c) -eq 1 -and ($cl -like '*S01E01.mkv').Count -eq 1) ($cl -join ', ')
+
+    # Room peers: each guest's engine gets a tracker of its torrent.ps1 on 127.0.0.1, which names the guest's
+    # tunnel for the room torrent only; the tunnel goes through A's share port to A's engine's BitTorrent port.
+    $ok = Wait-Until { (Peer-Adds).Count -ge 2 } 10
+    $tr = if ($ok) { [Uri]::UnescapeDataString([regex]::Match((Peer-Adds)[0], 'tr=([^&]+)').Groups[1].Value) } else { '' }
+    $wc = New-Object Net.WebClient
+    $ann = [byte[]]@(); $none = ''
+    try {
+        $ann = $wc.DownloadData($tr + '?info_hash=' + (-join (0..19 | ForEach-Object { '%' + $h1.Substring($_ * 2, 2) })) + '&compact=1')
+        $none = [Text.Encoding]::ASCII.GetString($wc.DownloadData($tr + '?info_hash=' + ('%22' * 20) + '&compact=1'))
+    } catch { }
+    $at = [Text.Encoding]::ASCII.GetString($ann).IndexOf('5:peers6:')
+    Check "a guest's engine learns its tunnel for the room torrent, nothing for another" ($ok -and $at -ge 0 -and $none -match '5:peers0:') ((Peer-Adds) -join ', ')
+    $reply = ''; $got = ''
+    if ($at -ge 0) {
+        $tun = New-Object System.Net.Sockets.TcpClient('127.0.0.1', ($ann[$at + 13] * 256 + $ann[$at + 14]))
+        $ts = $tun.GetStream(); $x = $utf8.GetBytes('bt-hello'); $ts.Write($x, 0, 8)
+        $acc = $bt.AcceptTcpClientAsync()
+        if ($acc.Wait(10000)) {
+            $hs = $acc.Result.GetStream(); $got = Read-Bytes $hs 8
+            $x = $utf8.GetBytes('bt-reply'); $hs.Write($x, 0, 8)
+            $reply = Read-Bytes $ts 8
+            $acc.Result.Close()
+        }
+        $tun.Close()
+    }
+    $alog = Get-Content -Raw -Encoding UTF8 (Join-Path $run 'cfg-A\watch_together_torrent.log') -ErrorAction SilentlyContinue
+    Check "the tunnel reaches the host's engine through its share port, both ways" ($got -eq 'bt-hello' -and $reply -eq 'bt-reply' -and $alog -match 'room peers: \w+''s torrent engine is linked') ("host got '{0}', guest got '{1}'" -f $got, $reply)
 
     # The swarm check: everyone measures; a slow swarm is flagged; play ends the check for all.
     $null = I $a @('script-message', 'watch-together-check')
@@ -173,7 +212,10 @@ try {
     $pre = @((Added) | Where-Object { $_ -like 'preload*' })
     Check 'near the end, the next episode is fetched ahead' ($ok -and $pre.Count -eq 2) ($pre -join ', ')
 
-    # A .torrent file: guests get it from the host's share port and add it as a file.
+    # A .torrent file: guests get it from the host's share port and add it as a file. Its streams stall
+    # after 150 KB (a slow swarm): a guest that is short of video says where, and the host's engine gets a
+    # reader there, so that part comes to the host's engine and on to the guest's over the room peer link.
+    $cfg.stall = @{ $h2 = 150000 }; [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
     $null = I $a @('loadfile', $tfile, 'replace')
     [void](Wait-Until { (Engine-Count $a) -eq 2 } 10)
     Start-Sleep -Milliseconds 300
@@ -182,6 +224,9 @@ try {
     $fileAdds = @((Added) | Where-Object { $_ -like "file:///*/watch-together/$h2-*.torrent" })
     Check 'a .torrent reaches the guests through the share port' ($ok -and $fileAdds.Count -ge 2) ((Added) -join ', ')
     Check "the room's old torrent leaves the guests' playlists" (-not (@((P $b 'playlist') | Where-Object { $_.filename -like "*$h1*" }))) ''
+    $ok = Wait-Until { @(Engine-Log | Where-Object { $_ -match "^range $h2 1 \d+$" }).Count -ge 1 } 15
+    Check "a stuck guest gets a reader in the host's engine where it stands" $ok (@(Engine-Log | Where-Object { $_ -like 'range *' }) -join ', ')
+    $cfg.Remove('stall'); [IO.File]::WriteAllText($cfgFile, (ConvertTo-Json -Depth 6 $cfg))
     $null = I $a @('set_property', 'pause', $false)
 
     # Resume memory per torrent: back to the magnet, from the clipboard this time. A torrent watched before
@@ -290,6 +335,7 @@ try {
 } finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
     if ($listener) { $listener.Stop() }
+    $bt.Stop()
     if (-not $fake.HasExited) { Stop-Process -Id $fake.Id -Force -ErrorAction SilentlyContinue }
     Get-CimInstance Win32_Process -Filter "Name='mpv.exe'" | Where-Object { $_.CommandLine -match 'wt-tor-' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

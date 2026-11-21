@@ -148,6 +148,8 @@ Protocol, one connection per file:
 1. The guest sends a JSON line `{file, offset, who}`.
 2. The host answers with `{size, offset}` or `{error}`, then the raw bytes from `offset`.
 
+With `{peer: <hash>, who}` instead of `file` (a guest's `torrent.ps1`, room peers in torrent-peers.md), the host answers `{ok: true}` and then copies raw bytes between that connection and its torrent engine's BitTorrent port (`user-data/watch-together/peer-port`), or `{error}` when it has no engine.
+
 With `length` in the request (a piece for `stream.ps1`), the host reads exactly that many bytes (at most 16 MB) into memory and sends them; an offset outside the file gets `{error: "bad range", size}` instead of a restart from 0. Pieces are announced on the host once per guest and file (`watching`), not per request.
 
 `file` must be the exact file name of a local entry of the host's current playlist, queried from mpv for every request. Names with path characters are refused, and so is everything else: verified with `..\..\Windows\win.ini`, an absolute path, and a file next to the episodes. Transfers run concurrently via `CopyToAsync`.
@@ -166,7 +168,7 @@ Downloads run one at a time through `fetch.ps1`. It writes `<name>.part` and con
 
 `stream.ps1` answers one mpv request at a time; a new one (a seek) drops the old. It fetches 2 MB pieces with `length` over 4 connections at once and sends them to mpv in order; the first piece goes to mpv as it arrives. A piece whose connection breaks is asked for again from where it stopped, up to 3 times. Turning it off, leaving or losing the room stops `stream.ps1` and removes the stream entries.
 
-An `on_load` hook gives these URLs (and torrent streams) the online buffer through `file-local-options`: `buffer.mb()` MB, 3/4 as `demuxer-max-bytes`, 1/4 as `demuxer-max-back-bytes`. mpv's own 150/50 MB is about a minute of 4K ahead. Local files keep the user's settings. Test: features.ps1 "stream gets 1152/384 MB of cache", "a local file keeps mpv's cache size".
+An `on_load` hook gives these URLs (and torrent streams) the online buffer through `file-local-options`: `buffer.mb()` MB, 3/4 as `demuxer-max-bytes`, 1/4 as `demuxer-max-back-bytes`, and `demuxer-donate-buffer=no`, so the watched part never takes the room the part ahead does not use (bugs.md). mpv's own 150/50 MB is about a minute of 4K ahead. Local files keep the user's settings. Test: features.ps1 "stream gets 1152/384 MB of cache", "a local file keeps mpv's cache size".
 
 ### Online buffer and the RAM guard
 

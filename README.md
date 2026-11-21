@@ -95,7 +95,9 @@ Voice-overs and subtitles that come as separate files in the torrent (a "Rus Sou
 
 If a guest's check line stays at "not on this episode yet", the guest's player has no list of the torrent's files yet. Torrent mode keeps a log in `%APPDATA%\mpv\watch_together_torrent.log`; send it along when something goes wrong.
 
-In a room, the guests get the same torrent from the host and each downloads it on their own PC. The video doesn't go through the host or Porthole. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly. A guest with a plugin older than 1.6 doesn't see the torrent, and the host gets a message about it.
+In a room, the guests get the same torrent from the host and each downloads it on their own PC. A guest who has an episode on disk plays that copy. A magnet reaches the guests as it is. A .torrent goes through port 47801, so share that port as well. Without it the guests start from the torrent's hash alone, which finds peers more slowly. A guest with a plugin older than 1.6 doesn't see the torrent, and the host gets a message about it.
+
+The players of a room also share pieces with each other: through the share port (47801), every guest's engine connects to the host's, and pieces go both ways. When a guest's swarm is slow and its player starts buffering, it tells the host where it stands, and the host's engine fetches that part too, so the guest gets it from the host. Guests share with each other only through the host. So the engine uploads without a limit, to the room and to the rest of the swarm, as a seeding torrent client does.
 
 Privacy: in a room each guest's own engine joins the host's torrent, so every guest's IP address is visible to that swarm, as with any torrent client. The guests also get the magnet link or the .torrent as the host has it, with its tracker addresses. A private tracker's address often carries a personal key, so open such a torrent in a room only with people you trust.
 
