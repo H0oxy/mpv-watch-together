@@ -9,7 +9,7 @@ local mp = require "mp"
 local utils = require "mp.utils"
 local options = require "mp.options"
 
-local VERSION = "1.8.0"
+local VERSION = "1.9.0"
 local PROTOCOL = 2
 
 -- The torrent engine (TorrServer, GPL-3.0) is downloaded on first use of a magnet or .torrent, never
